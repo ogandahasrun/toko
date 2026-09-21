@@ -151,6 +151,43 @@ if ($resK) {
         $kategori_list[] = $k;
     }
 }
+
+// Calculate next sequential item code for recommendation
+$next_kode_barang = 'BRG001';
+$resCodes = $koneksi->query("SELECT kode_barang FROM barang");
+$maxNum = 0;
+$codePrefix = 'BRG';
+$padLength = 3;
+$hasFormat = false;
+
+if ($resCodes && $resCodes->num_rows > 0) {
+    while ($rowCode = $resCodes->fetch_assoc()) {
+        $c = trim($rowCode['kode_barang']);
+        if (preg_match('/^([A-Za-z\-_]*?)(\d+)$/', $c, $m)) {
+            $p = $m[1];
+            $n = (int)$m[2];
+            if (!empty($p)) {
+                $hasFormat = true;
+                $codePrefix = $p;
+                $padLength = max($padLength, strlen($m[2]));
+            }
+            if ($n > $maxNum) {
+                $maxNum = $n;
+            }
+        }
+    }
+}
+
+$nextNum = $maxNum + 1;
+if ($hasFormat) {
+    $next_kode_barang = $codePrefix . str_pad($nextNum, $padLength, '0', STR_PAD_LEFT);
+} else {
+    if ($maxNum > 0) {
+        $next_kode_barang = (string)$nextNum;
+    } else {
+        $next_kode_barang = 'BRG001';
+    }
+}
 ?>
 
 <?= $alert ?>
@@ -263,8 +300,14 @@ if ($resK) {
             
             <div class="modal-body">
                 <div class="form-group">
-                    <label class="form-label">Kode Barang <span style="color:red;">*</span></label>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <label class="form-label" style="margin-bottom:0;">Kode Barang <span style="color:red;">*</span></label>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="generateAutoKode()" style="padding: 2px 8px; font-size: 11px; height: auto;" title="Generasikan kode urut otomatis">
+                            ⚡ Auto Kode
+                        </button>
+                    </div>
                     <input type="text" name="kode_barang" id="inpKode" class="form-control" placeholder="Contoh: BRG001" required>
+                    <span style="font-size: 11px; color: var(--text-secondary);">Kode disarankan secara otomatis agar urut, namun tetap dapat diubah secara manual.</span>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Nama Barang <span style="color:red;">*</span></label>
@@ -378,11 +421,17 @@ if ($resK) {
 </div>
 
 <script>
+const autoKodeBarang = '<?= $next_kode_barang ?>';
+
+function generateAutoKode() {
+    document.getElementById('inpKode').value = autoKodeBarang;
+}
+
 function openAddModal() {
     document.getElementById('modalTitle').innerText = 'Tambah Barang Baru';
     document.getElementById('formAction').value = 'add';
     document.getElementById('oldKodeBarang').value = '';
-    document.getElementById('inpKode').value = '';
+    document.getElementById('inpKode').value = autoKodeBarang;
     document.getElementById('inpKode').readOnly = false;
     document.getElementById('inpNama').value = '';
     document.getElementById('inpSatuan').value = '';

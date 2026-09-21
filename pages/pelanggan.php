@@ -3,6 +3,7 @@ if (!defined('host')) { exit; }
 
 $alert = '';
 $customer_id = isset($_GET['customer_id']) ? (int)$_GET['customer_id'] : 0;
+$search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 // Handle CRUD operations for Customer
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -42,14 +43,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete_customer') {
         $id = (int)$_POST['id'];
-        $stmt = $koneksi->prepare("DELETE FROM pelanggan WHERE id = ?");
-        $stmt->bind_param("i", $id);
-        if ($stmt->execute()) {
-            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Pelanggan berhasil dihapus!', 'success'));</script>";
-        } else {
-            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Gagal menghapus pelanggan!', 'danger'));</script>";
+        
+        // Check if customer still has active outstanding credit (piutang belum lunas)
+        $chkPiutang = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE pelanggan_id = $id AND status_kredit = 'belum_lunas'");
+        $totalPiutang = 0;
+        if ($chkPiutang && $rowP = $chkPiutang->fetch_assoc()) {
+            $totalPiutang = (double)$rowP['total'];
         }
-        $stmt->close();
+        
+        if ($totalPiutang > 0) {
+            $err_msg = "Pelanggan tidak dapat dihapus karena masih memiliki sisa piutang berjalan sebesar Rp " . number_format($totalPiutang, 0, ',', '.') . "!";
+            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err_msg', 'danger'));</script>";
+        } else {
+            $stmt = $koneksi->prepare("DELETE FROM pelanggan WHERE id = ?");
+            $stmt->bind_param("i", $id);
+            if ($stmt->execute()) {
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Pelanggan berhasil dihapus!', 'success'));</script>";
+            } else {
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Gagal menghapus pelanggan!', 'danger'));</script>";
+            }
+            $stmt->close();
+        }
     }
 
     // Handle Payment Installments (Cicilan)
@@ -136,6 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="content-card">
             <div class="card-header">
                 <h3 class="card-title">Riwayat Faktur Penjualan Kredit</h3>
+                <input type="text" id="inputSearchFaktur" class="form-control form-control-sm" placeholder="Cari no. penjualan / status..." style="width: 230px;">
             </div>
 
             <div class="table-responsive">
@@ -224,6 +239,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="content-card">
         <div class="card-header">
             <h3 class="card-title">Daftar Pelanggan</h3>
+            <form action="" method="GET" style="display: flex; gap: 8px; align-items: center;">
+                <input type="hidden" name="page" value="pelanggan">
+                <div style="position: relative;">
+                    <input type="text" name="search" id="inputSearchPelanggan" class="form-control form-control-sm" placeholder="Cari nama, alamat, no hp..." value="<?= htmlspecialchars($search) ?>" style="width: 250px;">
+                </div>
+                <button type="submit" class="btn btn-secondary btn-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    Cari
+                </button>
+                <?php if (!empty($search)): ?>
+                    <a href="index.php?page=pelanggan" class="btn btn-outline-secondary btn-sm" style="border: 1px solid var(--border-color); color: var(--text-secondary); text-decoration: none;">Reset</a>
+                <?php endif; ?>
+            </form>
         </div>
 
         <div class="table-responsive">
@@ -244,9 +272,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $q = "
                         SELECT c.*, 
                                COALESCE((SELECT SUM(sisa_piutang) FROM penjualan WHERE pelanggan_id = c.id AND status_kredit = 'belum_lunas'), 0) as total_piutang
-                        FROM pelanggan c 
-                        ORDER BY c.nama ASC
+                        FROM pelanggan c
                     ";
+                    if (!empty($search)) {
+                        $esc = $koneksi->real_escape_string($search);
+                        $q .= " WHERE c.nama LIKE '%$esc%' OR c.alamat LIKE '%$esc%' OR c.no_hp LIKE '%$esc%'";
+                    }
+                    $q .= " ORDER BY c.nama ASC";
                     $res = $koneksi->query($q);
                     if ($res && $res->num_rows > 0):
                         while ($r = $res->fetch_assoc()):
@@ -289,7 +321,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     else:
                     ?>
                         <tr>
-                            <td colspan="7" class="text-center text-secondary py-4">Belum ada pelanggan terdaftar.</td>
+                            <td colspan="7" class="text-center text-secondary py-4">
+                                <?= !empty($search) ? 'Tidak ada data pelanggan yang sesuai dengan kata kunci "'.htmlspecialchars($search).'".' : 'Belum ada pelanggan terdaftar.' ?>
+                            </td>
                         </tr>
                     <?php endif; ?>
                 </tbody>
@@ -558,4 +592,32 @@ async function openItemsModal(noPenjualan) {
         tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-danger">Gagal memuat data rincian barang!</td></tr>';
     }
 }
+
+// Client-side real-time filter for customer table
+document.getElementById('inputSearchPelanggan')?.addEventListener('input', function() {
+    const filter = this.value.toLowerCase().trim();
+    const tableBody = document.querySelector('.content-card table.table-custom tbody');
+    if (!tableBody) return;
+    const rows = tableBody.querySelectorAll('tr');
+    
+    rows.forEach(row => {
+        if (row.cells.length === 1) return; // Skip empty message row
+        const text = row.innerText.toLowerCase();
+        row.style.display = text.includes(filter) ? '' : 'none';
+    });
+});
+
+// Client-side real-time filter for invoice history table in credit profile view
+document.getElementById('inputSearchFaktur')?.addEventListener('input', function() {
+    const filter = this.value.toLowerCase().trim();
+    const tableBody = document.querySelector('.content-card table.table-custom tbody');
+    if (!tableBody) return;
+    const rows = tableBody.querySelectorAll('tr');
+    
+    rows.forEach(row => {
+        if (row.cells.length === 1) return;
+        const text = row.innerText.toLowerCase();
+        row.style.display = text.includes(filter) ? '' : 'none';
+    });
+});
 </script>
