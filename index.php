@@ -9,7 +9,7 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-// Refresh session access privileges dynamically from the database to avoid logout lag
+// Refresh session access privileges dynamically from database
 $userId = (int)$_SESSION['user_id'];
 $resUser = $koneksi->query("SELECT * FROM users WHERE id = $userId");
 if ($resUser && $resUser->num_rows > 0) {
@@ -17,14 +17,11 @@ if ($resUser && $resUser->num_rows > 0) {
     $_SESSION['nama_lengkap'] = $u['nama_lengkap'];
     $_SESSION['username'] = $u['username'];
     $_SESSION['level'] = $u['level'];
-    $_SESSION['akses_barang'] = (int)$u['akses_barang'];
-    $_SESSION['akses_faktur'] = (int)$u['akses_faktur'];
-    $_SESSION['akses_mutasi'] = (int)$u['akses_mutasi'];
-    $_SESSION['akses_penjualan'] = (int)$u['akses_penjualan'];
-    $_SESSION['akses_pelanggan'] = (int)$u['akses_pelanggan'];
-    $_SESSION['akses_keuangan'] = (int)$u['akses_keuangan'];
-    $_SESSION['akses_laporan'] = (int)$u['akses_laporan'];
-    $_SESSION['akses_pengaturan'] = (int)$u['akses_pengaturan'];
+    $_SESSION['akses_penjualan'] = (int)($u['akses_penjualan'] ?? 1);
+    $_SESSION['akses_cicilan'] = (int)($u['akses_cicilan'] ?? 1);
+    $_SESSION['akses_pelanggan'] = (int)($u['akses_pelanggan'] ?? 1);
+    $_SESSION['akses_laporan'] = (int)($u['akses_laporan'] ?? 1);
+    $_SESSION['akses_pengaturan'] = (int)($u['akses_pengaturan'] ?? 1);
 }
 
 // Fetch general setting
@@ -39,58 +36,10 @@ if ($resSetting && $resSetting->num_rows > 0) {
     $shop_cp = $rowSetting['cp'];
 }
 
-// AJAX Search handler for auto-complete in POS and Invoice forms
-if (isset($_GET['ajax_search_barang'])) {
-    header('Content-Type: application/json');
-    $q = isset($_GET['q']) ? trim($_GET['q']) : '';
-    $exact = isset($_GET['exact']) ? (int)$_GET['exact'] : 0;
-    $is_purchase = isset($_GET['is_purchase']) ? (int)$_GET['is_purchase'] : 0;
-    
-    // Read the dynamic location ID passed from the client, fallback if not specified
-    $lokasi_id = isset($_GET['lokasi_id']) ? (int)$_GET['lokasi_id'] : ($is_purchase ? 1 : 2);
-
-    if ($exact) {
-        $stmt = $koneksi->prepare("
-            SELECT b.kode_barang, b.nama_barang, b.satuan, b.kategori,
-                   COALESCE(bd.harga_beli, 0) as harga_beli, 
-                   COALESCE(bd.harga_jual, 0) as harga_jual,
-                   COALESCE(gb.stok, 0) as stok
-            FROM barang b
-            LEFT JOIN barang_detail bd ON b.kode_barang = bd.kode_barang
-            LEFT JOIN gudang_barang gb ON b.kode_barang = gb.kode_barang AND gb.lokasi_id = ?
-            WHERE b.kode_barang = ?
-        ");
-        $stmt->bind_param("is", $lokasi_id, $q);
-    } else {
-        $search = "%" . $q . "%";
-        $stmt = $koneksi->prepare("
-            SELECT b.kode_barang, b.nama_barang, b.satuan, b.kategori,
-                   COALESCE(bd.harga_beli, 0) as harga_beli, 
-                   COALESCE(bd.harga_jual, 0) as harga_jual,
-                   COALESCE(gb.stok, 0) as stok
-            FROM barang b
-            LEFT JOIN barang_detail bd ON b.kode_barang = bd.kode_barang
-            LEFT JOIN gudang_barang gb ON b.kode_barang = gb.kode_barang AND gb.lokasi_id = ?
-            WHERE b.kode_barang LIKE ? OR b.nama_barang LIKE ? OR b.kategori LIKE ?
-            LIMIT 10
-        ");
-        $stmt->bind_param("isss", $lokasi_id, $search, $search, $search);
-    }
-    
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $data = [];
-    while ($row = $result->fetch_assoc()) {
-        $data[] = $row;
-    }
-    echo json_encode($data);
-    exit;
-}
-
-// AJAX Payment history handler to fetch installment records in JSON format cleanly
+// AJAX Payment history handler
 if (isset($_GET['ajax_payment_history'])) {
     header('Content-Type: application/json');
-    $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : (isset($_GET['pen_id']) ? trim($_GET['pen_id']) : '');
+    $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : '';
     $esc_pen = $koneksi->real_escape_string($no_pen);
     $resH = $koneksi->query("SELECT tanggal, jumlah_bayar, keterangan FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen' ORDER BY id ASC");
     $history = [];
@@ -103,30 +52,49 @@ if (isset($_GET['ajax_payment_history'])) {
     exit;
 }
 
-// AJAX Sale Items handler to fetch item list of a specific sale in JSON format cleanly
-if (isset($_GET['ajax_sale_items'])) {
+// AJAX Sale Details handler for receipts & modals
+if (isset($_GET['ajax_sale_details'])) {
     header('Content-Type: application/json');
-    $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : (isset($_GET['pen_id']) ? trim($_GET['pen_id']) : '');
+    $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : '';
     $esc_pen = $koneksi->real_escape_string($no_pen);
-    $resItems = $koneksi->query("
-        SELECT pd.kode_barang, b.nama_barang, pd.jumlah, pd.harga_jual, pd.subtotal, b.satuan 
-        FROM penjualan_detail pd 
-        JOIN barang b ON pd.kode_barang = b.kode_barang 
-        WHERE pd.no_penjualan = '$esc_pen'
+    $resS = $koneksi->query("
+        SELECT p.*, pel.nama as nama_pelanggan, pel.no_hp 
+        FROM penjualan p 
+        LEFT JOIN pelanggan pel ON p.pelanggan_id = pel.id 
+        WHERE p.no_penjualan = '$esc_pen'
     ");
-    $items = [];
-    if ($resItems) {
-        while ($item = $resItems->fetch_assoc()) {
-            $items[] = $item;
+    if ($resS && $resS->num_rows > 0) {
+        $data = $resS->fetch_assoc();
+        echo json_encode(['success' => true, 'data' => $data]);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Transaksi tidak ditemukan']);
+    }
+    exit;
+}
+
+// AJAX Customer Sales history handler
+if (isset($_GET['ajax_customer_sales'])) {
+    header('Content-Type: application/json');
+    $cid = (int)$_GET['customer_id'];
+    $resCS = $koneksi->query("
+        SELECT no_penjualan, tanggal, nama_barang, harga_jual, sisa_piutang, tipe_pembayaran 
+        FROM penjualan 
+        WHERE pelanggan_id = $cid 
+        ORDER BY tanggal DESC, created_at DESC
+    ");
+    $sales = [];
+    if ($resCS) {
+        while ($s = $resCS->fetch_assoc()) {
+            $sales[] = $s;
         }
     }
-    echo json_encode($items);
+    echo json_encode($sales);
     exit;
 }
 
 // Router Page Configuration
 $page = isset($_GET['page']) ? $_GET['page'] : 'dashboard';
-$allowed_pages = ['dashboard', 'barang', 'gudang', 'faktur', 'mutasi', 'penjualan', 'pelanggan', 'keuangan', 'laporan', 'pengaturan', 'users'];
+$allowed_pages = ['dashboard', 'penjualan', 'cicilan', 'pelanggan', 'laporan', 'pengaturan', 'users'];
 
 if (!in_array($page, $allowed_pages)) {
     $page = 'dashboard';
@@ -134,13 +102,9 @@ if (!in_array($page, $allowed_pages)) {
 
 // Access Control Verification
 $has_access = true;
-if ($page === 'barang' && !($_SESSION['akses_barang'] ?? 0)) $has_access = false;
-if ($page === 'gudang' && !(($_SESSION['akses_barang'] ?? 0) || ($_SESSION['akses_mutasi'] ?? 0) || ($_SESSION['akses_faktur'] ?? 0))) $has_access = false;
-if ($page === 'faktur' && !($_SESSION['akses_faktur'] ?? 0)) $has_access = false;
-if ($page === 'mutasi' && !($_SESSION['akses_mutasi'] ?? 0)) $has_access = false;
 if ($page === 'penjualan' && !($_SESSION['akses_penjualan'] ?? 0)) $has_access = false;
+if ($page === 'cicilan' && !($_SESSION['akses_cicilan'] ?? 0)) $has_access = false;
 if ($page === 'pelanggan' && !($_SESSION['akses_pelanggan'] ?? 0)) $has_access = false;
-if ($page === 'keuangan' && !($_SESSION['akses_keuangan'] ?? 0)) $has_access = false;
 if ($page === 'laporan' && !($_SESSION['akses_laporan'] ?? 0)) $has_access = false;
 if ($page === 'pengaturan' && !($_SESSION['akses_pengaturan'] ?? 0)) $has_access = false;
 if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = false;
@@ -151,13 +115,13 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($shop_name) ?> - POS & Mutasi</title>
+    <title><?= htmlspecialchars($shop_name) ?> - POS & Piutang Sederhana</title>
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <!-- Main Style Sheet -->
     <link rel="stylesheet" href="assets/css/style.css">
     
-    <!-- Inline CSS for Mobile Menu Bottom Drawer -->
+    <!-- Dynamic Responsive Navigation Styles -->
     <style>
         .drawer-overlay {
             position: fixed;
@@ -184,7 +148,7 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
             transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
             max-height: 80vh;
             overflow-y: auto;
-            box-shadow: 0 -10px 25px -5px rgba(0, 0, 0, 0.1), 0 -8px 10px -6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 -10px 25px -5px rgba(0, 0, 0, 0.1);
         }
         .drawer-overlay.active .drawer-content {
             transform: translateY(0);
@@ -237,11 +201,11 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
 </head>
 <body>
 
-    <!-- Sidebar Left (Visible on Desktop Screen) -->
+    <!-- Sidebar Left (Desktop) -->
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">
-                <?= substr($shop_name, 0, 1) ?>
+                <?= strtoupper(substr($shop_name, 0, 1)) ?>
             </div>
             <div class="sidebar-title">
                 <?= htmlspecialchars(strlen($shop_name) > 14 ? substr($shop_name, 0, 12) . '..' : $shop_name) ?>
@@ -254,52 +218,24 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
                 <span>Dashboard</span>
             </a>
 
-            <?php if ($_SESSION['akses_barang'] ?? 0): ?>
-            <a href="index.php?page=barang" class="<?= $page === 'barang' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                <span>Master Barang</span>
-            </a>
-            <?php endif; ?>
-
-            <?php if (($_SESSION['akses_barang'] ?? 0) || ($_SESSION['akses_mutasi'] ?? 0) || ($_SESSION['akses_faktur'] ?? 0)): ?>
-            <a href="index.php?page=gudang" class="<?= $page === 'gudang' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                <span>Gudang & Stok</span>
-            </a>
-            <?php endif; ?>
-
-            <?php if ($_SESSION['akses_faktur'] ?? 0): ?>
-            <a href="index.php?page=faktur" class="<?= $page === 'faktur' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                <span>Faktur Pembelian</span>
-            </a>
-            <?php endif; ?>
-
-            <?php if ($_SESSION['akses_mutasi'] ?? 0): ?>
-            <a href="index.php?page=mutasi" class="<?= $page === 'mutasi' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
-                <span>Mutasi Barang</span>
+            <?php if ($_SESSION['akses_pelanggan'] ?? 0): ?>
+            <a href="index.php?page=pelanggan" class="<?= $page === 'pelanggan' ? 'active' : '' ?>">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                <span>Data Pelanggan</span>
             </a>
             <?php endif; ?>
 
             <?php if ($_SESSION['akses_penjualan'] ?? 0): ?>
             <a href="index.php?page=penjualan" class="<?= $page === 'penjualan' ? 'active' : '' ?>">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
-                <span>Kasir (Penjualan)</span>
+                <span>Transaksi Penjualan</span>
             </a>
             <?php endif; ?>
 
-            <?php if ($_SESSION['akses_pelanggan'] ?? 0): ?>
-            <a href="index.php?page=pelanggan" class="<?= $page === 'pelanggan' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-                <span>Pelanggan & Kredit</span>
-            </a>
-            <?php endif; ?>
-
-            <?php if ($_SESSION['akses_keuangan'] ?? 0): ?>
-            <a href="index.php?page=keuangan" class="<?= $page === 'keuangan' ? 'active' : '' ?>">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                <span>Kas & Keuangan</span>
+            <?php if ($_SESSION['akses_cicilan'] ?? 0): ?>
+            <a href="index.php?page=cicilan" class="<?= $page === 'cicilan' ? 'active' : '' ?>">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+                <span>Pembayaran Cicilan</span>
             </a>
             <?php endif; ?>
 
@@ -335,13 +271,13 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
                     <div class="user-role"><?= htmlspecialchars($_SESSION['level']) ?></div>
                 </div>
             </div>
-            <a href="logout.php" class="btn btn-danger btn-sm btn-logout" style="width: 100%; display: flex; justify-content: center;">
+            <a href="logout.php" class="btn btn-danger btn-sm btn-logout" style="width: 100%; display: flex; justify-content: center; margin-top: 10px;">
                 Keluar
             </a>
         </div>
     </aside>
 
-    <!-- Bottom Navigation Bar (Visible on Mobile Screens) -->
+    <!-- Bottom Navigation Bar (Mobile) -->
     <nav class="bottom-nav">
         <a href="index.php?page=dashboard" class="bottom-nav-item <?= $page === 'dashboard' ? 'active' : '' ?>">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
@@ -351,21 +287,21 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
         <?php if ($_SESSION['akses_penjualan'] ?? 0): ?>
         <a href="index.php?page=penjualan" class="bottom-nav-item <?= $page === 'penjualan' ? 'active' : '' ?>">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
-            <span>Kasir</span>
+            <span>Penjualan</span>
         </a>
         <?php endif; ?>
 
-        <?php if (($_SESSION['akses_barang'] ?? 0) || ($_SESSION['akses_mutasi'] ?? 0) || ($_SESSION['akses_faktur'] ?? 0)): ?>
-        <a href="index.php?page=gudang" class="bottom-nav-item <?= $page === 'gudang' ? 'active' : '' ?>">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-            <span>Stok</span>
+        <?php if ($_SESSION['akses_cicilan'] ?? 0): ?>
+        <a href="index.php?page=cicilan" class="bottom-nav-item <?= $page === 'cicilan' ? 'active' : '' ?>">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+            <span>Cicilan</span>
         </a>
         <?php endif; ?>
 
         <?php if ($_SESSION['akses_pelanggan'] ?? 0): ?>
         <a href="index.php?page=pelanggan" class="bottom-nav-item <?= $page === 'pelanggan' ? 'active' : '' ?>">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
-            <span>Kredit</span>
+            <span>Pelanggan</span>
         </a>
         <?php endif; ?>
 
@@ -393,11 +329,11 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
         ?>
     </main>
 
-    <!-- Drawer Overlay Menu Lainnya (Mobile Only) -->
+    <!-- Drawer Overlay Menu Lainnya (Mobile) -->
     <div id="drawerMenu" class="drawer-overlay" onclick="closeDrawerMenu(event)">
         <div class="drawer-content" onclick="event.stopPropagation()">
             <div class="drawer-header">
-                <span class="drawer-title">Semua Menu Utama</span>
+                <span class="drawer-title">Menu Utama</span>
                 <button class="btn-close" onclick="closeDrawerMenu(event)" style="background:none; border:none; padding:4px; cursor:pointer;">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:#64748b;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
@@ -408,52 +344,24 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
                     <span>Dashboard</span>
                 </a>
                 
-                <?php if ($_SESSION['akses_barang'] ?? 0): ?>
-                <a href="index.php?page=barang" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                    <span>Data Barang</span>
-                </a>
-                <?php endif; ?>
-
-                <?php if (($_SESSION['akses_barang'] ?? 0) || ($_SESSION['akses_mutasi'] ?? 0) || ($_SESSION['akses_faktur'] ?? 0)): ?>
-                <a href="index.php?page=gudang" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                    <span>Stok Gudang</span>
-                </a>
-                <?php endif; ?>
-
-                <?php if ($_SESSION['akses_faktur'] ?? 0): ?>
-                <a href="index.php?page=faktur" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    <span>Faktur Beli</span>
-                </a>
-                <?php endif; ?>
-
-                <?php if ($_SESSION['akses_mutasi'] ?? 0): ?>
-                <a href="index.php?page=mutasi" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
-                    <span>Mutasi Stok</span>
+                <?php if ($_SESSION['akses_pelanggan'] ?? 0): ?>
+                <a href="index.php?page=pelanggan" class="drawer-item" onclick="closeDrawerMenu(event)">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                    <span>Pelanggan</span>
                 </a>
                 <?php endif; ?>
 
                 <?php if ($_SESSION['akses_penjualan'] ?? 0): ?>
                 <a href="index.php?page=penjualan" class="drawer-item" onclick="closeDrawerMenu(event)">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
-                    <span>Kasir Jual</span>
+                    <span>Penjualan</span>
                 </a>
                 <?php endif; ?>
 
-                <?php if ($_SESSION['akses_pelanggan'] ?? 0): ?>
-                <a href="index.php?page=pelanggan" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-                    <span>Kredit & Piutang</span>
-                </a>
-                <?php endif; ?>
-
-                <?php if ($_SESSION['akses_keuangan'] ?? 0): ?>
-                <a href="index.php?page=keuangan" class="drawer-item" onclick="closeDrawerMenu(event)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    <span>Kas & Keuangan</span>
+                <?php if ($_SESSION['akses_cicilan'] ?? 0): ?>
+                <a href="index.php?page=cicilan" class="drawer-item" onclick="closeDrawerMenu(event)">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+                    <span>Cicilan</span>
                 </a>
                 <?php endif; ?>
 
@@ -467,7 +375,7 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
                 <?php if ($_SESSION['akses_pengaturan'] ?? 0): ?>
                 <a href="index.php?page=pengaturan" class="drawer-item" onclick="closeDrawerMenu(event)">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                    <span>Profil Toko</span>
+                    <span>Pengaturan Toko</span>
                 </a>
                 <?php endif; ?>
 
@@ -486,7 +394,7 @@ if ($page === 'users' && ($_SESSION['level'] ?? '') !== 'admin') $has_access = f
         </div>
     </div>
 
-    <!-- Common Javascript Scripts -->
+    <!-- Common JS -->
     <script src="assets/js/app.js"></script>
     <script>
     function toggleDrawerMenu() {

@@ -2,12 +2,11 @@
 if (!defined('host')) { exit; }
 
 $alert = '';
-$customer_id = isset($_GET['customer_id']) ? (int)$_GET['customer_id'] : 0;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 // Handle CRUD operations for Customer
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = isset($_POST['action']) ? $_POST['action'] : '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $action = $_POST['action'];
 
     if ($action === 'add_customer' || $action === 'edit_customer') {
         $nama = trim($_POST['nama']);
@@ -44,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete_customer') {
         $id = (int)$_POST['id'];
         
-        // Check if customer still has active outstanding credit (piutang belum lunas)
+        // Check if customer has outstanding credit
         $chkPiutang = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE pelanggan_id = $id AND status_kredit = 'belum_lunas'");
         $totalPiutang = 0;
         if ($chkPiutang && $rowP = $chkPiutang->fetch_assoc()) {
@@ -65,559 +64,292 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->close();
         }
     }
-
-    // Handle Payment Installments (Cicilan)
-    if ($action === 'pay_installment') {
-        $no_penjualan = isset($_POST['no_penjualan']) ? trim($_POST['no_penjualan']) : '';
-        $jumlah_bayar = (double)$_POST['jumlah_bayar'];
-        $tanggal = $_POST['tanggal'];
-        $keterangan = trim($_POST['keterangan']);
-
-        if (!empty($no_penjualan) && $jumlah_bayar > 0 && !empty($tanggal)) {
-            $koneksi->begin_transaction();
-            try {
-                // Fetch current outstanding
-                $esc_pen = $koneksi->real_escape_string($no_penjualan);
-                $resP = $koneksi->query("SELECT sisa_piutang, total_jual, no_penjualan FROM penjualan WHERE no_penjualan = '$esc_pen'");
-                if (!$resP || $resP->num_rows === 0) {
-                    throw new Exception("Faktur penjualan tidak ditemukan!");
-                }
-                $pData = $resP->fetch_assoc();
-                $sisa = (double)$pData['sisa_piutang'];
-                $no_trx = $pData['no_penjualan'];
-
-                if ($jumlah_bayar > $sisa) {
-                    throw new Exception("Jumlah pembayaran (Rp " . number_format($jumlah_bayar, 0, ',', '.') . ") melebihi sisa piutang (Rp " . number_format($sisa, 0, ',', '.') . ")!");
-                }
-
-                // Save installment row using no_penjualan
-                $stmtInst = $koneksi->prepare("INSERT INTO pembayaran_kredit (no_penjualan, tanggal, jumlah_bayar, keterangan) VALUES (?, ?, ?, ?)");
-                $stmtInst->bind_param("ssds", $no_penjualan, $tanggal, $jumlah_bayar, $keterangan);
-                $stmtInst->execute();
-                $stmtInst->close();
-
-                // Calculate new outstanding balance
-                $newSisa = $sisa - $jumlah_bayar;
-                $statusKredit = ($newSisa <= 0) ? 'lunas' : 'belum_lunas';
-
-                // Update invoice credit status
-                $stmtUp = $koneksi->prepare("UPDATE penjualan SET sisa_piutang = ?, status_kredit = ? WHERE no_penjualan = ?");
-                $stmtUp->bind_param("dss", $newSisa, $statusKredit, $no_penjualan);
-                $stmtUp->execute();
-                $stmtUp->close();
-
-                $koneksi->commit();
-                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Cicilan berhasil dibayarkan!', 'success'));</script>";
-            } catch (Exception $e) {
-                $koneksi->rollback();
-                $err_msg = addslashes($e->getMessage());
-                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err_msg', 'danger'));</script>";
-            }
-        } else {
-            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Mohon isi semua data cicilan dengan benar!', 'warning'));</script>";
-        }
-    }
 }
+
+// Query Customers with Outstanding Credit Sum
+$where = "1=1";
+if (!empty($search)) {
+    $esc = $koneksi->real_escape_string($search);
+    $where .= " AND (c.nama LIKE '%$esc%' OR c.no_hp LIKE '%$esc%' OR c.alamat LIKE '%$esc%')";
+}
+
+$query = "
+    SELECT c.*, 
+           COALESCE(SUM(CASE WHEN p.status_kredit = 'belum_lunas' THEN p.sisa_piutang ELSE 0 END), 0) as total_piutang,
+           COUNT(p.no_penjualan) as total_transaksi
+    FROM pelanggan c
+    LEFT JOIN penjualan p ON c.id = p.pelanggan_id
+    WHERE $where
+    GROUP BY c.id
+    ORDER BY c.nama ASC
+";
+$customers_result = $koneksi->query($query);
 ?>
 
 <?= $alert ?>
 
-<?php if ($customer_id > 0): ?>
-    <!-- Customer Credit Profile -->
-    <?php
-    $resCust = $koneksi->query("SELECT * FROM pelanggan WHERE id = $customer_id");
-    if ($resCust && $resCust->num_rows > 0):
-        $c = $resCust->fetch_assoc();
-        
-        // Sum current outstanding credit
-        $resSum = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE pelanggan_id = $customer_id AND status_kredit = 'belum_lunas'");
-        $total_piutang = 0;
-        if ($resSum) {
-            $rowSum = $resSum->fetch_assoc();
-            $total_piutang = $rowSum['total'] ? (double)$rowSum['total'] : 0;
-        }
-    ?>
-        <div class="page-header">
-            <div>
-                <h1 class="page-title">Profil Piutang: <?= htmlspecialchars($c['nama']) ?></h1>
-                <p class="text-secondary">Limit Kredit: Rp <?= number_format($c['limit_kredit'], 0, ',', '.') ?> | Total Berjalan: <strong style="color:#ef4444;">Rp <?= number_format($total_piutang, 0, ',', '.') ?></strong></p>
-            </div>
-            <div>
-                <a href="index.php?page=pelanggan" class="btn btn-secondary">Kembali</a>
-            </div>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Data Pelanggan</h1>
+        <p class="text-secondary">Kelola database pelanggan, limit kredit, dan informasi kontak</p>
+    </div>
+    <div>
+        <button class="btn btn-primary btn-lg" onclick="openAddModal()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            Tambah Pelanggan Baru
+        </button>
+    </div>
+</div>
+
+<!-- Search Card -->
+<div class="card mb-4" style="padding: 16px;">
+    <form method="GET" action="index.php" style="display: flex; gap: 12px;">
+        <input type="hidden" name="page" value="pelanggan">
+        <input type="text" name="search" class="form-control" placeholder="Cari nama pelanggan, nomor HP, atau alamat..." value="<?= htmlspecialchars($search) ?>">
+        <button type="submit" class="btn btn-secondary">Cari</button>
+        <?php if (!empty($search)): ?>
+            <a href="index.php?page=pelanggan" class="btn btn-light">Reset</a>
+        <?php endif; ?>
+    </form>
+</div>
+
+<!-- Table Card -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Daftar Pelanggan Terdaftar</h3>
+    </div>
+    <div class="table-responsive">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>No</th>
+                    <th>Nama Pelanggan</th>
+                    <th>No. HP</th>
+                    <th>Alamat</th>
+                    <th>Limit Kredit</th>
+                    <th>Sisa Piutang Berjalan</th>
+                    <th>Total Transaksi</th>
+                    <th style="text-align: right;">Aksi</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if ($customers_result && $customers_result->num_rows > 0): ?>
+                    <?php $no = 1; while ($c = $customers_result->fetch_assoc()): ?>
+                        <?php 
+                            $piutang = (double)$c['total_piutang'];
+                            $limit = (double)$c['limit_kredit'];
+                            $is_over = ($limit > 0 && $piutang > $limit);
+                        ?>
+                        <tr>
+                            <td><?= $no++ ?></td>
+                            <td><strong><?= htmlspecialchars($c['nama']) ?></strong></td>
+                            <td><?= htmlspecialchars($c['no_hp'] ?: '-') ?></td>
+                            <td><?= htmlspecialchars($c['alamat'] ?: '-') ?></td>
+                            <td>Rp <?= number_format($limit, 0, ',', '.') ?></td>
+                            <td class="<?= $piutang > 0 ? 'text-danger font-bold' : 'text-muted' ?>">
+                                Rp <?= number_format($piutang, 0, ',', '.') ?>
+                                <?php if ($is_over): ?>
+                                    <span class="badge badge-danger" style="margin-left: 6px;">Over Limit</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= $c['total_transaksi'] ?> Transaksi</td>
+                            <td style="text-align: right; white-space: nowrap;">
+                                <button class="btn btn-sm btn-info" onclick="viewCustomerSales(<?= $c['id'] ?>, '<?= htmlspecialchars(addslashes($c['nama'])) ?>')">
+                                    Riwayat Jual
+                                </button>
+                                <button class="btn btn-sm btn-light" onclick='openEditModal(<?= json_encode($c) ?>)'>
+                                    Edit
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="confirmDelete(<?= $c['id'] ?>, '<?= htmlspecialchars(addslashes($c['nama'])) ?>')">
+                                    Hapus
+                                </button>
+                            </td>
+                        </tr>
+                    <?php endwhile; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="8" class="text-center py-4 text-muted">
+                            Belum ada data pelanggan yang terdaftar.
+                        </td>
+                    </tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal Form Add/Edit Customer -->
+<div id="modalCustomer" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title" id="modalCustomerTitle">Tambah Pelanggan Baru</h3>
+            <button class="modal-close" onclick="closeCustomerModal()">&times;</button>
         </div>
+        <form method="POST" action="index.php?page=pelanggan">
+            <input type="hidden" name="action" id="cust_action" value="add_customer">
+            <input type="hidden" name="id" id="cust_id" value="">
 
-        <div class="content-card">
-            <div class="card-header">
-                <h3 class="card-title">Riwayat Faktur Penjualan Kredit</h3>
-                <input type="text" id="inputSearchFaktur" class="form-control form-control-sm" placeholder="Cari no. penjualan / status..." style="width: 230px;">
+            <div class="modal-body">
+                <div class="form-group mb-3">
+                    <label class="form-label">Nama Pelanggan <span class="text-danger">*</span></label>
+                    <input type="text" name="nama" id="cust_nama" class="form-control" required placeholder="Masukkan nama lengkap">
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Nomor Handphone / WA</label>
+                    <input type="text" name="no_hp" id="cust_no_hp" class="form-control" placeholder="Contoh: 081234567890">
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Alamat Lengkap</label>
+                    <textarea name="alamat" id="cust_alamat" class="form-control" rows="2" placeholder="Masukkan alamat tempat tinggal/toko"></textarea>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Limit Kredit / Max Piutang (Rp)</label>
+                    <input type="number" name="limit_kredit" id="cust_limit_kredit" class="form-control" min="0" placeholder="0 jika tidak ada batas limit">
+                    <small class="text-muted">Batas maksimal hutang piutang yang diperbolehkan untuk pelanggan ini.</small>
+                </div>
             </div>
 
+            <div class="modal-footer">
+                <button type="button" class="btn btn-light" onclick="closeCustomerModal()">Batal</button>
+                <button type="submit" class="btn btn-primary" id="cust_submit_btn">Simpan Pelanggan</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal Customer Sales History -->
+<div id="modalCustHistory" class="modal">
+    <div class="modal-content" style="max-width: 750px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="custHistoryTitle">Riwayat Transaksi Pelanggan</h3>
+            <button class="modal-close" onclick="closeCustHistoryModal()">&times;</button>
+        </div>
+        <div class="modal-body">
             <div class="table-responsive">
-                <table class="table-custom">
+                <table class="table">
                     <thead>
                         <tr>
-                            <th>No Penjualan</th>
-                            <th>Tanggal Jual</th>
-                            <th>Jatuh Tempo</th>
-                            <th>Tempo</th>
-                            <th>Nilai Transaksi</th>
+                            <th>No. Transaksi - Barang</th>
+                            <th>Tanggal</th>
+                            <th>Harga Jual</th>
+                            <th>Terbayar</th>
                             <th>Sisa Piutang</th>
                             <th>Status</th>
-                            <th style="width: 180px; text-align: center;">Tindakan</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        <?php
-                        $resFak = $koneksi->query("
-                            SELECT * FROM penjualan 
-                            WHERE pelanggan_id = $customer_id AND tipe_pembayaran = 'kredit' 
-                            ORDER BY created_at DESC
-                        ");
-                        if ($resFak && $resFak->num_rows > 0):
-                            while ($f = $resFak->fetch_assoc()):
-                        ?>
-                            <tr>
-                                <td data-label="No Penjualan"><strong><?= htmlspecialchars($f['no_penjualan']) ?></strong></td>
-                                <td data-label="Tanggal Jual"><?= date('d/m/Y', strtotime($f['tanggal'])) ?></td>
-                                <td data-label="Jatuh Tempo"><?= date('d/m/Y', strtotime($f['jatuh_tempo'])) ?></td>
-                                <td data-label="Tempo" class="text-capitalize"><?= htmlspecialchars($f['tempo_tipe']) ?></td>
-                                <td data-label="Nilai Transaksi">Rp <?= number_format($f['total_jual'], 0, ',', '.') ?></td>
-                                <td data-label="Sisa Piutang" style="color: #ef4444; font-weight: 700;">Rp <?= number_format($f['sisa_piutang'], 0, ',', '.') ?></td>
-                                <td data-label="Status">
-                                    <?php if ($f['status_kredit'] === 'lunas'): ?>
-                                        <span class="badge badge-success">Lunas</span>
-                                    <?php else: ?>
-                                        <span class="badge badge-danger">Belum Lunas</span>
-                                    <?php endif; ?>
-                                </td>
-                                <td class="text-center">
-                                    <div style="display: flex; gap: 4px; justify-content: center;">
-                                        <?php if ($f['status_kredit'] !== 'lunas'): ?>
-                                            <button class="btn btn-primary btn-sm" onclick='openInstallmentModal(<?= json_encode($f) ?>)'>
-                                                Bayar
-                                            </button>
-                                        <?php endif; ?>
-                                        <button class="btn btn-secondary btn-sm" onclick="openHistoryModal('<?= $f['no_penjualan'] ?>')">
-                                            Riwayat
-                                        </button>
-                                        <button class="btn btn-info btn-sm" onclick="openItemsModal('<?= $f['no_penjualan'] ?>')" style="background-color: #0ea5e9; border-color: #0ea5e9; color: #fff;">
-                                            Barang
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        <?php 
-                            endwhile;
-                        else:
-                        ?>
-                            <tr>
-                                <td colspan="8" class="text-center text-secondary py-4">Belum ada transaksi kredit untuk pelanggan ini.</td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    <?php endif; ?>
-
-<?php else: ?>
-    <!-- List of Customers -->
-    <div class="page-header">
-        <div>
-            <h1 class="page-title">Pelanggan & Penjualan Kredit</h1>
-            <p class="text-secondary">Kelola daftar pelanggan, batas limit kredit, dan cicilan piutang berjalan</p>
-        </div>
-        <div>
-            <button class="btn btn-primary" onclick="openAddModal()">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                Registrasi Pelanggan
-            </button>
-        </div>
-    </div>
-
-    <div class="content-card">
-        <div class="card-header">
-            <h3 class="card-title">Daftar Pelanggan</h3>
-            <form action="" method="GET" style="display: flex; gap: 8px; align-items: center;">
-                <input type="hidden" name="page" value="pelanggan">
-                <div style="position: relative;">
-                    <input type="text" name="search" id="inputSearchPelanggan" class="form-control form-control-sm" placeholder="Cari nama, alamat, no hp..." value="<?= htmlspecialchars($search) ?>" style="width: 250px;">
-                </div>
-                <button type="submit" class="btn btn-secondary btn-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    Cari
-                </button>
-                <?php if (!empty($search)): ?>
-                    <a href="index.php?page=pelanggan" class="btn btn-outline-secondary btn-sm" style="border: 1px solid var(--border-color); color: var(--text-secondary); text-decoration: none;">Reset</a>
-                <?php endif; ?>
-            </form>
-        </div>
-
-        <div class="table-responsive">
-            <table class="table-custom">
-                <thead>
-                    <tr>
-                        <th>Nama Pelanggan</th>
-                        <th>Alamat</th>
-                        <th>No HP</th>
-                        <th>Limit Kredit</th>
-                        <th>Total Piutang Berjalan</th>
-                        <th>Kondisi Limit</th>
-                        <th style="width: 200px; text-align: center;">Tindakan</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php
-                    $q = "
-                        SELECT c.*, 
-                               COALESCE((SELECT SUM(sisa_piutang) FROM penjualan WHERE pelanggan_id = c.id AND status_kredit = 'belum_lunas'), 0) as total_piutang
-                        FROM pelanggan c
-                    ";
-                    if (!empty($search)) {
-                        $esc = $koneksi->real_escape_string($search);
-                        $q .= " WHERE c.nama LIKE '%$esc%' OR c.alamat LIKE '%$esc%' OR c.no_hp LIKE '%$esc%'";
-                    }
-                    $q .= " ORDER BY c.nama ASC";
-                    $res = $koneksi->query($q);
-                    if ($res && $res->num_rows > 0):
-                        while ($r = $res->fetch_assoc()):
-                            $percent = $r['limit_kredit'] > 0 ? ($r['total_piutang'] / $r['limit_kredit']) * 100 : 0;
-                            if ($percent >= 90) {
-                                $limit_status = '<span class="badge badge-danger">Kritis ('.round($percent).'%)</span>';
-                            } elseif ($percent >= 50) {
-                                $limit_status = '<span class="badge badge-warning">Sedang ('.round($percent).'%)</span>';
-                            } else {
-                                $limit_status = '<span class="badge badge-success">Aman ('.round($percent).'%)</span>';
-                            }
-                    ?>
-                        <tr>
-                            <td data-label="Nama Pelanggan"><strong><?= htmlspecialchars($r['nama']) ?></strong></td>
-                            <td data-label="Alamat"><?= htmlspecialchars($r['alamat'] ? $r['alamat'] : '-') ?></td>
-                            <td data-label="No HP"><?= htmlspecialchars($r['no_hp'] ? $r['no_hp'] : '-') ?></td>
-                            <td data-label="Limit Kredit">Rp <?= number_format($r['limit_kredit'], 0, ',', '.') ?></td>
-                            <td data-label="Total Piutang Berjalan" style="font-weight: 700; color: <?= $r['total_piutang'] > 0 ? '#ef4444' : 'var(--text-primary)' ?>;">
-                                Rp <?= number_format($r['total_piutang'], 0, ',', '.') ?>
-                            </td>
-                            <td data-label="Kondisi Limit"><?= $limit_status ?></td>
-                            <td class="text-center">
-                                <div style="display: flex; gap: 4px; justify-content: center; flex-wrap: wrap;">
-                                    <a href="index.php?page=pelanggan&customer_id=<?= $r['id'] ?>" class="btn btn-primary btn-sm">
-                                        Piutang
-                                    </a>
-                                    <button class="btn btn-warning btn-sm" onclick='openEditModal(<?= json_encode($r) ?>)'>
-                                        Edit
-                                    </button>
-                                    <form action="" method="POST" onsubmit="return confirm('Apakah Anda yakin ingin menghapus pelanggan ini? Seluruh riwayat penjualan kredit akan dilepas dari profil pelanggan.');">
-                                        <input type="hidden" name="action" value="delete_customer">
-                                        <input type="hidden" name="id" value="<?= $r['id'] ?>">
-                                        <button type="submit" class="btn btn-danger btn-sm">Hapus</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php 
-                        endwhile;
-                    else:
-                    ?>
-                        <tr>
-                            <td colspan="7" class="text-center text-secondary py-4">
-                                <?= !empty($search) ? 'Tidak ada data pelanggan yang sesuai dengan kata kunci "'.htmlspecialchars($search).'".' : 'Belum ada pelanggan terdaftar.' ?>
-                            </td>
-                        </tr>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-<?php endif; ?>
-
-<!-- Modal Tambah/Edit Customer -->
-<div id="modalCustomer" class="modal-overlay">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 id="modalTitle">Registrasi Pelanggan Baru</h3>
-            <button class="btn-close" onclick="closeModal('modalCustomer')">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-            </button>
-        </div>
-        <form action="" method="POST">
-            <input type="hidden" name="action" id="formAction" value="add_customer">
-            <input type="hidden" name="id" id="customerId" value="">
-            
-            <div class="modal-body">
-                <div class="form-group">
-                    <label class="form-label">Nama Lengkap Pelanggan <span style="color:red;">*</span></label>
-                    <input type="text" name="nama" id="inpNama" class="form-control" placeholder="Contoh: Budi Santoso" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Alamat Lengkap</label>
-                    <textarea name="alamat" id="inpAlamat" class="form-control" rows="2" placeholder="Contoh: Jl. Diponegoro No 10"></textarea>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Nomor Handphone / Kontak CP</label>
-                    <input type="text" name="no_hp" id="inpHp" class="form-control" placeholder="Contoh: 0812XXXXXXXX">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Batas Limit Kredit (Rp) <span style="color:red;">*</span></label>
-                    <input type="number" name="limit_kredit" id="inpLimit" class="form-control" placeholder="Contoh: 5000000" inputmode="numeric" value="0" required>
-                    <span style="font-size:12px; color:var(--text-secondary);">Membatasi total piutang yang belum terbayar pelanggan ini</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('modalCustomer')">Batal</button>
-                <button type="submit" class="btn btn-primary">Simpan</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Modal Bayar Cicilan (Installment) -->
-<div id="modalInstallment" class="modal-overlay">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Bayar Cicilan Kredit</h3>
-            <button class="btn-close" onclick="closeModal('modalInstallment')">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-            </button>
-        </div>
-        <form action="" method="POST">
-            <input type="hidden" name="action" value="pay_installment">
-            <input type="hidden" name="no_penjualan" id="instNoPenjualan" value="">
-            
-            <div class="modal-body">
-                <div style="margin-bottom:16px; padding:12px; background:#f8fafc; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-                    No. Nota: <strong id="lblInstNo"></strong><br>
-                    Sisa Piutang: <strong id="lblInstSisa" style="color:#ef4444;"></strong>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">Tanggal Pembayaran <span style="color:red;">*</span></label>
-                    <input type="date" name="tanggal" class="form-control" value="<?= date('Y-m-d') ?>" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Jumlah Pembayaran / Cicilan (Rp) <span style="color:red;">*</span></label>
-                    <input type="number" name="jumlah_bayar" id="inpJumlahBayar" class="form-control" placeholder="0" inputmode="numeric" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Keterangan / Catatan</label>
-                    <input type="text" name="keterangan" class="form-control" placeholder="Contoh: Pembayaran cicilan ke-2">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('modalInstallment')">Batal</button>
-                <button type="submit" class="btn btn-primary">Posting Pembayaran</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Modal Riwayat Cicilan (History) -->
-<div id="modalHistory" class="modal-overlay">
-    <div class="modal-content modal-lg">
-        <div class="modal-header">
-            <h3>Riwayat Pembayaran Cicilan</h3>
-            <button class="btn-close" onclick="closeModal('modalHistory')">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-            </button>
-        </div>
-        <div class="modal-body" style="padding:0;">
-            <div id="historyTableContainer" class="table-responsive">
-                <table class="table-custom">
-                    <thead>
-                        <tr>
-                            <th>Urutan</th>
-                            <th>Tanggal Bayar</th>
-                            <th>Nilai Pembayaran</th>
-                            <th>Keterangan</th>
-                        </tr>
-                    </thead>
-                    <tbody id="historyTableBody">
-                        <tr>
-                            <td colspan="4" class="text-center py-4">Memuat data...</td>
-                        </tr>
+                    <tbody id="custHistoryBody">
+                        <tr><td colspan="6" class="text-center">Memuat...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
         <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" onclick="closeModal('modalHistory')">Tutup</button>
+            <button type="button" class="btn btn-secondary" onclick="closeCustHistoryModal()">Tutup</button>
         </div>
     </div>
 </div>
 
-<!-- Modal Detail Barang yang Dibeli (Credit Items) -->
-<div id="modalItems" class="modal-overlay">
-    <div class="modal-content modal-lg">
-        <div class="modal-header">
-            <h3>Rincian Barang Belanja - Nota <span id="lblItemsNo"></span></h3>
-            <button class="btn-close" onclick="closeModal('modalItems')">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-            </button>
-        </div>
-        <div class="modal-body" style="padding:0;">
-            <div id="itemsTableContainer" class="table-responsive">
-                <table class="table-custom">
-                    <thead>
-                        <tr>
-                            <th>Kode Barang</th>
-                            <th>Nama Barang</th>
-                            <th>Harga Satuan</th>
-                            <th>Jumlah</th>
-                            <th>Subtotal</th>
-                        </tr>
-                    </thead>
-                    <tbody id="itemsTableBody">
-                        <tr>
-                            <td colspan="5" class="text-center py-4">Memuat data...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" onclick="closeModal('modalItems')">Tutup</button>
-        </div>
-    </div>
-</div>
-
-<!-- Riwayat pembayaran dimuat secara dinamis via AJAX dari index.php -->
+<form id="formDeleteCust" method="POST" action="index.php?page=pelanggan" style="display: none;">
+    <input type="hidden" name="action" value="delete_customer">
+    <input type="hidden" name="id" id="delete_cust_id">
+</form>
 
 <script>
 function openAddModal() {
-    document.getElementById('modalTitle').innerText = 'Registrasi Pelanggan Baru';
-    document.getElementById('formAction').value = 'add_customer';
-    document.getElementById('customerId').value = '';
-    document.getElementById('inpNama').value = '';
-    document.getElementById('inpAlamat').value = '';
-    document.getElementById('inpHp').value = '';
-    document.getElementById('inpLimit').value = '0';
-    openModal('modalCustomer');
-}
-
-function openEditModal(data) {
-    document.getElementById('modalTitle').innerText = 'Edit Data Pelanggan';
-    document.getElementById('formAction').value = 'edit_customer';
-    document.getElementById('customerId').value = data.id;
-    document.getElementById('inpNama').value = data.nama;
-    document.getElementById('inpAlamat').value = data.alamat;
-    document.getElementById('inpHp').value = data.no_hp;
-    document.getElementById('inpLimit').value = data.limit_kredit;
-    openModal('modalCustomer');
-}
-
-function openInstallmentModal(data) {
-    document.getElementById('instNoPenjualan').value = data.no_penjualan;
-    document.getElementById('lblInstNo').innerText = data.no_penjualan;
-    
-    const sisa = parseFloat(data.sisa_piutang);
-    document.getElementById('lblInstSisa').innerText = 'Rp ' + new Intl.NumberFormat('id-ID').format(sisa);
-    document.getElementById('inpJumlahBayar').value = sisa;
-    document.getElementById('inpJumlahBayar').max = sisa;
-    openModal('modalInstallment');
-}
-
-async function openHistoryModal(noPenjualan) {
-    openModal('modalHistory');
-    const tbody = document.getElementById('historyTableBody');
-    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-secondary">Sedang memuat data...</td></tr>';
-
-    try {
-        const res = await fetch(`index.php?page=pelanggan&ajax_payment_history=1&no_penjualan=${encodeURIComponent(noPenjualan)}`);
-        const data = await res.json();
-        
-        tbody.innerHTML = '';
-        if (data.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-secondary">Belum ada riwayat pembayaran cicilan untuk nota ini.</td></tr>';
-            return;
-        }
-
-        data.forEach((item, index) => {
-            const tr = document.createElement('tr');
-            const amt = parseFloat(item.jumlah_bayar);
-            const formatAmt = new Intl.NumberFormat('id-ID').format(amt);
-            
-            // Convert MySQL date Y-m-d to d/m/Y
-            const parts = item.tanggal.split('-');
-            const dateStr = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : item.tanggal;
-
-            tr.innerHTML = `
-                <td data-label="Urutan"><strong>Cicilan ke-${index + 1}</strong></td>
-                <td data-label="Tanggal Bayar">${dateStr}</td>
-                <td data-label="Nilai Pembayaran" style="color:#10b981; font-weight:700;">Rp ${formatAmt}</td>
-                <td data-label="Keterangan">${item.keterangan ? item.keterangan : '-'}</td>
-            `;
-            tbody.appendChild(tr);
-        });
-    } catch (e) {
-        console.error(e);
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-danger">Gagal memuat data riwayat cicilan!</td></tr>';
+    document.getElementById('modalCustomerTitle').innerText = 'Tambah Pelanggan Baru';
+    document.getElementById('cust_action').value = 'add_customer';
+    document.getElementById('cust_id').value = '';
+    document.getElementById('cust_nama').value = '';
+    document.getElementById('cust_no_hp').value = '';
+    document.getElementById('cust_alamat').value = '';
+    document.getElementById('cust_limit_kredit').value = '0';
+    document.getElementById('cust_submit_btn').innerText = 'Simpan Pelanggan';
+    const modal = document.getElementById('modalCustomer');
+    if (modal) {
+        modal.classList.add('active');
+        modal.style.display = 'flex';
     }
 }
 
-async function openItemsModal(noPenjualan) {
-    openModal('modalItems');
-    document.getElementById('lblItemsNo').innerText = noPenjualan;
-    const tbody = document.getElementById('itemsTableBody');
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-secondary">Sedang memuat data...</td></tr>';
-
-    try {
-        const res = await fetch(`index.php?page=pelanggan&ajax_sale_items=1&no_penjualan=${encodeURIComponent(noPenjualan)}`);
-        const data = await res.json();
-        
-        tbody.innerHTML = '';
-        if (data.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-secondary">Tidak ada data barang ditemukan untuk nota ini.</td></tr>';
-            return;
-        }
-
-        data.forEach(item => {
-            const tr = document.createElement('tr');
-            const prc = parseFloat(item.harga_jual);
-            const sub = parseFloat(item.subtotal);
-            const formatPrc = new Intl.NumberFormat('id-ID').format(prc);
-            const formatSub = new Intl.NumberFormat('id-ID').format(sub);
-
-            tr.innerHTML = `
-                <td data-label="Kode Barang"><strong>${item.kode_barang}</strong></td>
-                <td data-label="Nama Barang">${item.nama_barang}</td>
-                <td data-label="Harga Satuan">Rp ${formatPrc}</td>
-                <td data-label="Jumlah">${item.jumlah} ${item.satuan}</td>
-                <td data-label="Subtotal" style="font-weight:700; color:var(--primary-color);">Rp ${formatSub}</td>
-            `;
-            tbody.appendChild(tr);
-        });
-    } catch (e) {
-        console.error(e);
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-danger">Gagal memuat data rincian barang!</td></tr>';
+function openEditModal(cust) {
+    document.getElementById('modalCustomerTitle').innerText = 'Edit Data Pelanggan';
+    document.getElementById('cust_action').value = 'edit_customer';
+    document.getElementById('cust_id').value = cust.id;
+    document.getElementById('cust_nama').value = cust.nama;
+    document.getElementById('cust_no_hp').value = cust.no_hp || '';
+    document.getElementById('cust_alamat').value = cust.alamat || '';
+    document.getElementById('cust_limit_kredit').value = cust.limit_kredit || 0;
+    document.getElementById('cust_submit_btn').innerText = 'Perbarui Pelanggan';
+    const modal = document.getElementById('modalCustomer');
+    if (modal) {
+        modal.classList.add('active');
+        modal.style.display = 'flex';
     }
 }
 
-// Client-side real-time filter for customer table
-document.getElementById('inputSearchPelanggan')?.addEventListener('input', function() {
-    const filter = this.value.toLowerCase().trim();
-    const tableBody = document.querySelector('.content-card table.table-custom tbody');
-    if (!tableBody) return;
-    const rows = tableBody.querySelectorAll('tr');
-    
-    rows.forEach(row => {
-        if (row.cells.length === 1) return; // Skip empty message row
-        const text = row.innerText.toLowerCase();
-        row.style.display = text.includes(filter) ? '' : 'none';
-    });
-});
+function closeCustomerModal() {
+    const modal = document.getElementById('modalCustomer');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.display = 'none';
+    }
+}
 
-// Client-side real-time filter for invoice history table in credit profile view
-document.getElementById('inputSearchFaktur')?.addEventListener('input', function() {
-    const filter = this.value.toLowerCase().trim();
-    const tableBody = document.querySelector('.content-card table.table-custom tbody');
-    if (!tableBody) return;
-    const rows = tableBody.querySelectorAll('tr');
-    
-    rows.forEach(row => {
-        if (row.cells.length === 1) return;
-        const text = row.innerText.toLowerCase();
-        row.style.display = text.includes(filter) ? '' : 'none';
-    });
-});
+function confirmDelete(id, nama) {
+    if (confirm('Apakah Anda yakin ingin menghapus pelanggan "' + nama + '"?')) {
+        document.getElementById('delete_cust_id').value = id;
+        document.getElementById('formDeleteCust').submit();
+    }
+}
+
+function viewCustomerSales(cust_id, cust_nama) {
+    document.getElementById('custHistoryTitle').innerText = 'Riwayat Transaksi - ' + cust_nama;
+    const body = document.getElementById('custHistoryBody');
+    body.innerHTML = '<tr><td colspan="6" class="text-center py-3">Memuat riwayat transaksi...</td></tr>';
+    const modal = document.getElementById('modalCustHistory');
+    if (modal) {
+        modal.classList.add('active');
+        modal.style.display = 'flex';
+    }
+
+    fetch('index.php?ajax_customer_sales=1&customer_id=' + cust_id)
+        .then(res => res.json())
+        .then(data => {
+            if (data.length === 0) {
+                body.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-muted">Belum ada riwayat transaksi penjualan.</td></tr>';
+                return;
+            }
+            let html = '';
+            data.forEach(row => {
+                const is_lunas = (row.sisa_piutang <= 0);
+                const badge = is_lunas ? '<span class="badge badge-success">Tunai / Lunas</span>' : '<span class="badge badge-warning">Cicilan</span>';
+                const terbayar = row.harga_jual - row.sisa_piutang;
+                html += `
+                    <tr>
+                        <td><strong>${row.no_penjualan}</strong> - ${row.nama_barang}</td>
+                        <td>${row.tanggal}</td>
+                        <td>Rp ${Number(row.harga_jual).toLocaleString('id-ID')}</td>
+                        <td class="text-success">Rp ${Number(terbayar).toLocaleString('id-ID')}</td>
+                        <td class="${row.sisa_piutang > 0 ? 'text-danger font-bold' : 'text-muted'}">Rp ${Number(row.sisa_piutang).toLocaleString('id-ID')}</td>
+                        <td>${badge}</td>
+                    </tr>
+                `;
+            });
+            body.innerHTML = html;
+        })
+        .catch(err => {
+            body.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Gagal memuat data transaksi.</td></tr>';
+        });
+}
+
+function closeCustHistoryModal() {
+    const modal = document.getElementById('modalCustHistory');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.display = 'none';
+    }
+}
 </script>

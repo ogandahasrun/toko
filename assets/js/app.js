@@ -2,6 +2,7 @@
 function openModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
+        modal.classList.add('active');
         modal.style.display = 'flex';
     }
 }
@@ -9,13 +10,15 @@ function openModal(modalId) {
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
+        modal.classList.remove('active');
         modal.style.display = 'none';
     }
 }
 
 // Close modal when clicking outside of it
 window.addEventListener('click', function(event) {
-    if (event.target.classList.contains('modal-overlay')) {
+    if (event.target.classList.contains('modal-overlay') || event.target.classList.contains('modal')) {
+        event.target.classList.remove('active');
         event.target.style.display = 'none';
     }
 });

@@ -1,8 +1,8 @@
 <?php
 // Konfigurasi MySQL / MariaDB di XAMPP
 $host = '103.140.189.19';
-$user = 'bpjsfktl';
-$pass = 'bpjsfktl';
+$user = 'ogan';
+$pass = 'be2064nn';
 $db   = 'toko';
 
 // 103.140.189.19

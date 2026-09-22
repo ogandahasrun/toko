@@ -2,61 +2,58 @@
 if (!defined('host')) { exit; }
 
 // Fetch statistics
-$total_barang = 0;
-$res = $koneksi->query("SELECT COUNT(*) as total FROM barang");
-if ($res) $total_barang = $res->fetch_assoc()['total'];
-
-$stok_gudang = 0;
-$res = $koneksi->query("SELECT SUM(stok) as total FROM gudang_barang WHERE lokasi_id = 1");
-if ($res) {
-    $val = $res->fetch_assoc()['total'];
-    $stok_gudang = $val ? $val : 0;
-}
-
-$stok_etalase = 0;
-$res = $koneksi->query("SELECT SUM(stok) as total FROM gudang_barang WHERE lokasi_id = 2");
-if ($res) {
-    $val = $res->fetch_assoc()['total'];
-    $stok_etalase = $val ? $val : 0;
+$omset_total = 0;
+$modal_total = 0;
+$laba_total = 0;
+$res = $koneksi->query("SELECT SUM(harga_jual) as total_jual, SUM(harga_beli) as total_beli FROM penjualan");
+if ($res && $r = $res->fetch_assoc()) {
+    $omset_total = $r['total_jual'] ? (double)$r['total_jual'] : 0;
+    $modal_total = $r['total_beli'] ? (double)$r['total_beli'] : 0;
+    $laba_total = $omset_total - $modal_total;
 }
 
 $penjualan_hari_ini = 0;
-$res = $koneksi->query("SELECT SUM(total_jual) as total FROM penjualan WHERE tanggal = CURDATE()");
-if ($res) {
-    $val = $res->fetch_assoc()['total'];
-    $penjualan_hari_ini = $val ? $val : 0;
+$res = $koneksi->query("SELECT SUM(harga_jual) as total FROM penjualan WHERE tanggal = CURDATE()");
+if ($res && $r = $res->fetch_assoc()) {
+    $penjualan_hari_ini = $r['total'] ? (double)$r['total'] : 0;
 }
 
 $total_piutang = 0;
-$res = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE tipe_pembayaran = 'kredit' AND status_kredit = 'belum_lunas'");
-if ($res) {
-    $val = $res->fetch_assoc()['total'];
-    $total_piutang = $val ? $val : 0;
+$res = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE status_kredit = 'belum_lunas'");
+if ($res && $r = $res->fetch_assoc()) {
+    $total_piutang = $r['total'] ? (double)$r['total'] : 0;
 }
 
-// Low Stock Alerts (stok gabungan < min_stok)
-$low_stock = [];
-$resLow = $koneksi->query("
-    SELECT b.kode_barang, b.nama_barang, bd.min_stok, 
-           COALESCE(SUM(gb.stok), 0) as total_stok
-    FROM barang b
-    JOIN barang_detail bd ON b.kode_barang = bd.kode_barang
-    LEFT JOIN gudang_barang gb ON b.kode_barang = gb.kode_barang
-    GROUP BY b.kode_barang
-    HAVING total_stok < bd.min_stok
+$total_pelanggan = 0;
+$res = $koneksi->query("SELECT COUNT(*) as total FROM pelanggan");
+if ($res) {
+    $total_pelanggan = (int)$res->fetch_assoc()['total'];
+}
+
+// Fetch 5 latest sales transactions
+$latest_sales = $koneksi->query("
+    SELECT p.*, pel.nama as nama_pelanggan
+    FROM penjualan p
+    LEFT JOIN pelanggan pel ON p.pelanggan_id = pel.id
+    ORDER BY p.tanggal DESC, p.created_at DESC
     LIMIT 5
 ");
-if ($resLow) {
-    while ($row = $resLow->fetch_assoc()) {
-        $low_stock[] = $row;
-    }
-}
+
+// Fetch 5 unpaid credit transactions
+$unpaid_credits = $koneksi->query("
+    SELECT p.*, pel.nama as nama_pelanggan, pel.no_hp
+    FROM penjualan p
+    LEFT JOIN pelanggan pel ON p.pelanggan_id = pel.id
+    WHERE p.status_kredit = 'belum_lunas'
+    ORDER BY p.tanggal ASC
+    LIMIT 5
+");
 ?>
 
 <div class="page-header">
     <div>
-        <h1 class="page-title">Ringkasan Toko</h1>
-        <p class="text-secondary">Informasi stok, penjualan, dan kredit terkini</p>
+        <h1 class="page-title">Ringkasan Ringkas Toko</h1>
+        <p class="text-secondary">Informasi penjualan, modal, keuntungan, dan piutang pelanggan terkini</p>
     </div>
     <div>
         <span class="badge badge-primary" style="padding: 8px 16px; font-size: 13px;">
@@ -65,168 +62,131 @@ if ($resLow) {
     </div>
 </div>
 
-<!-- Stat Cards -->
-<div class="card-grid">
+<!-- Financial Summary Stat Cards -->
+<div class="card-grid mb-4">
     <div class="stat-card">
         <div class="stat-info">
-            <h3>Total Produk</h3>
-            <p><?= number_format($total_barang) ?></p>
+            <h3>Total Omset Penjualan</h3>
+            <p style="color: #2563eb;">Rp <?= number_format($omset_total, 0, ',', '.') ?></p>
         </div>
         <div class="stat-icon primary">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-        </div>
-    </div>
-
-    <div class="stat-card">
-        <div class="stat-info">
-            <h3>Stok di Gudang</h3>
-            <p><?= number_format($stok_gudang) ?></p>
-        </div>
-        <div class="stat-icon warning">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-        </div>
-    </div>
-
-    <div class="stat-card">
-        <div class="stat-info">
-            <h3>Stok di Etalase</h3>
-            <p><?= number_format($stok_etalase) ?></p>
-        </div>
-        <div class="stat-icon success">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
         </div>
     </div>
 
     <div class="stat-card">
         <div class="stat-info">
-            <h3>Omset Hari Ini</h3>
-            <p>Rp <?= number_format($penjualan_hari_ini, 0, ',', '.') ?></p>
+            <h3>Total Modal (Harga Beli)</h3>
+            <p style="color: #475569;">Rp <?= number_format($modal_total, 0, ',', '.') ?></p>
         </div>
-        <div class="stat-icon secondary">
+        <div class="stat-icon warning">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-info">
+            <h3>Estimasi Keuntungan (Laba)</h3>
+            <p style="color: #10b981;">+Rp <?= number_format($laba_total, 0, ',', '.') ?></p>
+        </div>
+        <div class="stat-icon success">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
         </div>
     </div>
 
     <div class="stat-card">
         <div class="stat-info">
-            <h3>Total Piutang</h3>
+            <h3>Total Piutang Berjalan</h3>
             <p style="color: #ef4444;">Rp <?= number_format($total_piutang, 0, ',', '.') ?></p>
         </div>
         <div class="stat-icon danger">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
         </div>
     </div>
 </div>
 
-<div class="tx-layout">
-    <!-- Recent Penjualan -->
-    <div>
-        <div class="content-card">
-            <div class="card-header">
-                <h3 class="card-title">Penjualan Terakhir</h3>
-                <a href="index.php?page=penjualan" class="btn btn-secondary btn-sm">Buka Kasir</a>
-            </div>
-            <div class="table-responsive">
-                <table class="table-custom">
-                    <thead>
-                        <tr>
-                            <th>No Penjualan</th>
-                            <th>Tanggal</th>
-                            <th>Tipe</th>
-                            <th>Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php
-                        $resPen = $koneksi->query("
-                            SELECT p.*, c.nama as nama_pelanggan 
-                            FROM penjualan p 
-                            LEFT JOIN pelanggan c ON p.pelanggan_id = c.id 
-                            ORDER BY p.created_at DESC LIMIT 5
-                        ");
-                        if ($resPen && $resPen->num_rows > 0):
-                            while ($p = $resPen->fetch_assoc()):
-                        ?>
+<div class="card-grid mb-4" style="grid-template-columns: 2fr 1fr;">
+    <!-- Recent Sales Table -->
+    <div class="card">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 class="card-title">Penjualan Terbaru</h3>
+            <a href="index.php?page=penjualan" class="btn btn-sm btn-light">Lihat Semua</a>
+        </div>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>No. Transaksi - Nama Barang</th>
+                        <th>Pelanggan</th>
+                        <th>Harga Jual</th>
+                        <th>Keuntungan</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($latest_sales && $latest_sales->num_rows > 0): ?>
+                        <?php while ($ls = $latest_sales->fetch_assoc()): ?>
+                            <?php 
+                                $keuntungan = $ls['harga_jual'] - $ls['harga_beli'];
+                                $is_tunai = ($ls['sisa_piutang'] <= 0);
+                            ?>
                             <tr>
-                                <td data-label="No Penjualan">
-                                    <strong><?= htmlspecialchars($p['no_penjualan']) ?></strong><br>
-                                    <span class="text-secondary"><?= htmlspecialchars($p['nama_pelanggan'] ? $p['nama_pelanggan'] : 'Umum') ?></span>
+                                <td>
+                                    <strong><?= htmlspecialchars($ls['no_penjualan']) ?></strong> - <?= htmlspecialchars($ls['nama_barang']) ?>
                                 </td>
-                                <td data-label="Tanggal"><?= date('d/m/Y', strtotime($p['tanggal'])) ?></td>
-                                <td data-label="Tipe">
-                                    <?php if ($p['tipe_pembayaran'] === 'tunai'): ?>
+                                <td><?= htmlspecialchars($ls['nama_pelanggan'] ?? 'Umum') ?></td>
+                                <td>Rp <?= number_format($ls['harga_jual'], 0, ',', '.') ?></td>
+                                <td class="text-success font-bold">+Rp <?= number_format($keuntungan, 0, ',', '.') ?></td>
+                                <td>
+                                    <?php if ($is_tunai): ?>
                                         <span class="badge badge-success">Tunai</span>
                                     <?php else: ?>
-                                        <span class="badge badge-warning">Kredit (<?= htmlspecialchars($p['tempo_tipe']) ?>)</span>
+                                        <span class="badge badge-warning">Cicilan</span>
                                     <?php endif; ?>
                                 </td>
-                                <td data-label="Total">Rp <?= number_format($p['total_jual'], 0, ',', '.') ?></td>
                             </tr>
-                        <?php 
-                            endwhile;
-                        else:
-                        ?>
-                            <tr>
-                                <td colspan="4" class="text-center text-secondary py-4">Belum ada transaksi penjualan</td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
+                        <?php endwhile; ?>
+                    <?php else: ?>
+                        <tr><td colspan="5" class="text-center py-3 text-muted">Belum ada transaksi penjualan.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 
-    <!-- Right Side: Low Stock & Shortcuts -->
-    <div>
-        <!-- Low Stock Warning Card -->
-        <?php if (!empty($low_stock)): ?>
-            <div class="content-card" style="border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.02);">
-                <div class="card-header">
-                    <h3 class="card-title" style="color: #ef4444; display: flex; align-items: center; gap: 8px;">
-                        <span>⚠️</span> Peringatan Stok Tipis
-                    </h3>
-                </div>
-                <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
-                    <?php foreach ($low_stock as $ls): ?>
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #fff; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+    <!-- Outstanding Credits Card -->
+    <div class="card">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 class="card-title">Piutang Aktif</h3>
+            <a href="index.php?page=cicilan" class="btn btn-sm btn-light">Bayar Cicilan</a>
+        </div>
+        <div style="padding: 16px;">
+            <?php if ($unpaid_credits && $unpaid_credits->num_rows > 0): ?>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <?php while ($uc = $unpaid_credits->fetch_assoc()): ?>
+                        <div style="padding: 12px; background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
                             <div>
-                                <strong style="font-size: 13px;"><?= htmlspecialchars($ls['nama_barang']) ?></strong><br>
-                                <span class="text-secondary" style="font-size: 12px;"><?= htmlspecialchars($ls['kode_barang']) ?></span>
+                                <div style="font-weight: 700; font-size: 13px; color: #0f172a;">
+                                    <?= htmlspecialchars($uc['no_penjualan']) ?> - <?= htmlspecialchars($uc['nama_barang']) ?>
+                                </div>
+                                <div style="font-size: 12px; color: #64748b;">
+                                    Pelanggan: <?= htmlspecialchars($uc['nama_pelanggan'] ?? 'Umum') ?>
+                                </div>
                             </div>
                             <div style="text-align: right;">
-                                <span style="color: #ef4444; font-weight: 700; font-size: 14px;"><?= $ls['total_stok'] ?></span> 
-                                <span class="text-secondary" style="font-size: 12px;">/ min <?= $ls['min_stok'] ?></span>
+                                <div style="color: #ef4444; font-weight: 800; font-size: 13px;">
+                                    Rp <?= number_format($uc['sisa_piutang'], 0, ',', '.') ?>
+                                </div>
+                                <a href="index.php?page=cicilan&search=<?= urlencode($uc['no_penjualan']) ?>" class="text-primary" style="font-size: 11px; text-decoration: none; font-weight: 600;">
+                                    Bayar &rarr;
+                                </a>
                             </div>
                         </div>
-                    <?php endforeach; ?>
+                    <?php endwhile; ?>
                 </div>
-                <br>
-                <a href="index.php?page=faktur" class="btn btn-primary btn-sm" style="width: 100%; justify-content: center;">
-                    Restock via Faktur Baru
-                </a>
-            </div>
-        <?php endif; ?>
-
-        <!-- Quick actions -->
-        <div class="content-card">
-            <h3 class="card-title" style="margin-bottom: 16px;">Tindakan Cepat</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <?php if ($_SESSION['akses_penjualan']): ?>
-                    <a href="index.php?page=penjualan" class="btn btn-primary" style="justify-content: center; font-size: 13px; padding: 12px;">Kasir</a>
-                <?php endif; ?>
-                
-                <?php if ($_SESSION['akses_mutasi']): ?>
-                    <a href="index.php?page=mutasi" class="btn btn-secondary" style="justify-content: center; font-size: 13px; padding: 12px;">Mutasi Barang</a>
-                <?php endif; ?>
-                
-                <?php if ($_SESSION['akses_barang']): ?>
-                    <a href="index.php?page=barang" class="btn btn-secondary" style="justify-content: center; font-size: 13px; padding: 12px;">Tambah Barang</a>
-                <?php endif; ?>
-
-                <?php if ($_SESSION['akses_pelanggan']): ?>
-                    <a href="index.php?page=pelanggan" class="btn btn-secondary" style="justify-content: center; font-size: 13px; padding: 12px;">Kelola Kredit</a>
-                <?php endif; ?>
-            </div>
+            <?php else: ?>
+                <div class="text-center py-4 text-muted" style="font-size: 13px;">Tidak ada tagihan piutang aktif saat ini.</div>
+            <?php endif; ?>
         </div>
     </div>
 </div>

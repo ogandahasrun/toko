@@ -386,30 +386,42 @@ body {
     overflow-x: auto;
 }
 
-.table-custom {
+.table-custom,
+.table {
     width: 100%;
     border-collapse: collapse;
     text-align: left;
+    border: 1px solid #cbd5e1;
 }
 
-.table-custom th {
-    padding: 14px 16px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    border-bottom: 2px solid var(--border-color);
-    font-size: 13px;
+.table-custom th,
+.table th {
+    padding: 12px 14px;
+    font-weight: 700;
+    color: #334155;
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-bottom: 2px solid #94a3b8;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
-.table-custom td {
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--border-color);
+.table-custom td,
+.table td {
+    padding: 12px 14px;
+    border: 1px solid #e2e8f0;
     font-size: 14px;
 }
 
-.table-custom tr:hover {
-    background: rgba(0, 0, 0, 0.01);
+.table-custom tr:nth-child(even),
+.table tr:nth-child(even) {
+    background-color: #f8fafc;
+}
+
+.table-custom tr:hover,
+.table tr:hover {
+    background-color: #f1f5f9;
 }
 
 /* Badge System */
@@ -462,13 +474,14 @@ select.form-control {
 }
 
 /* Modals */
+.modal,
 .modal-overlay {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(15, 23, 42, 0.4);
+    background: rgba(15, 23, 42, 0.5);
     backdrop-filter: blur(4px);
     z-index: 1000;
     display: none;
@@ -476,6 +489,11 @@ select.form-control {
     justify-content: center;
     padding: 16px;
     animation: fadeIn 0.2s ease-out;
+}
+
+.modal.active,
+.modal-overlay.active {
+    display: flex !important;
 }
 
 .modal-content {
