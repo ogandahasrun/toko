@@ -239,39 +239,39 @@ $sales_list = $koneksi->query($sales_query);
                             $status_label = $is_tunai ? 'Tunai (Lunas)' : 'Cicilan (Kredit)';
                         ?>
                         <tr>
-                            <td>
+                            <td data-label="No. Transaksi">
                                 <span class="badge" style="background: #e0e7ff; color: #3730a3; font-family: monospace; font-size: 12px; padding: 6px 10px; border-radius: 6px;">
                                     <?= htmlspecialchars($s['no_penjualan']) ?>
                                 </span>
                             </td>
-                            <td>
+                            <td data-label="Nama Barang">
                                 <strong style="color: #0f172a; font-size: 14px;"><?= htmlspecialchars($s['nama_barang']) ?></strong>
                             </td>
-                            <td><?= date('d/m/Y', strtotime($s['tanggal'])) ?></td>
-                            <td>
+                            <td data-label="Tanggal"><?= date('d/m/Y', strtotime($s['tanggal'])) ?></td>
+                            <td data-label="Pelanggan">
                                 <div><strong><?= htmlspecialchars($s['nama_pelanggan'] ?? 'Umum') ?></strong></div>
                                 <?php if (!empty($s['no_hp'])): ?>
                                     <small class="text-muted"><?= htmlspecialchars($s['no_hp']) ?></small>
                                 <?php endif; ?>
                             </td>
-                            <td style="text-align: right; color: #64748b;">
+                            <td data-label="Harga Beli (Modal)" style="text-align: right; color: #64748b;">
                                 Rp <?= number_format($s['harga_beli'], 0, ',', '.') ?>
                             </td>
-                            <td style="text-align: right; font-weight: 700; color: #1e293b;">
+                            <td data-label="Harga Jual" style="text-align: right; font-weight: 700; color: #1e293b;">
                                 Rp <?= number_format($s['harga_jual'], 0, ',', '.') ?>
                             </td>
-                            <td style="text-align: right;">
+                            <td data-label="Keuntungan" style="text-align: right;">
                                 <span style="color: #059669; background: #ecfdf5; padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 13px;">
                                     +Rp <?= number_format($laba, 0, ',', '.') ?>
                                 </span>
                             </td>
-                            <td style="text-align: right; color: #10b981; font-weight: 600;">
+                            <td data-label="Terbayar" style="text-align: right; color: #10b981; font-weight: 600;">
                                 Rp <?= number_format($terbayar, 0, ',', '.') ?>
                             </td>
-                            <td style="text-align: right;" class="<?= $s['sisa_piutang'] > 0 ? 'text-danger font-bold' : 'text-muted' ?>">
+                            <td data-label="Sisa Piutang" style="text-align: right;" class="<?= $s['sisa_piutang'] > 0 ? 'text-danger font-bold' : 'text-muted' ?>">
                                 Rp <?= number_format($s['sisa_piutang'], 0, ',', '.') ?>
                             </td>
-                            <td style="text-align: center;">
+                            <td data-label="Status" style="text-align: center;">
                                 <span class="badge <?= $badge_class ?>" style="padding: 6px 12px;"><?= $status_label ?></span>
                             </td>
                             <td style="text-align: right; white-space: nowrap;">

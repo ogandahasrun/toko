@@ -101,7 +101,8 @@ body {
     transition: var(--transition);
 }
 
-.sidebar-menu a:hover, .sidebar-menu a.active {
+.sidebar-menu a:hover,
+.sidebar-menu a.active {
     color: #fff;
     background: rgba(255, 255, 255, 0.05);
 }
@@ -287,11 +288,25 @@ body {
     color: #fff;
 }
 
-.stat-icon.primary { background: var(--primary-gradient); }
-.stat-icon.secondary { background: var(--secondary-gradient); }
-.stat-icon.success { background: var(--success); }
-.stat-icon.warning { background: var(--warning); }
-.stat-icon.danger { background: var(--danger); }
+.stat-icon.primary {
+    background: var(--primary-gradient);
+}
+
+.stat-icon.secondary {
+    background: var(--secondary-gradient);
+}
+
+.stat-icon.success {
+    background: var(--success);
+}
+
+.stat-icon.warning {
+    background: var(--warning);
+}
+
+.stat-icon.danger {
+    background: var(--danger);
+}
 
 .stat-icon svg {
     width: 24px;
@@ -434,10 +449,25 @@ body {
     text-transform: uppercase;
 }
 
-.badge-primary { background: rgba(99, 102, 241, 0.1); color: #4f46e5; }
-.badge-success { background: rgba(16, 185, 129, 0.1); color: #10b981; }
-.badge-warning { background: rgba(245, 158, 11, 0.1); color: #d97706; }
-.badge-danger { background: rgba(239, 108, 108, 0.1); color: #ef4444; }
+.badge-primary {
+    background: rgba(99, 102, 241, 0.1);
+    color: #4f46e5;
+}
+
+.badge-success {
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+}
+
+.badge-warning {
+    background: rgba(245, 158, 11, 0.1);
+    color: #d97706;
+}
+
+.badge-danger {
+    background: rgba(239, 108, 108, 0.1);
+    color: #ef4444;
+}
 
 /* Forms & Inputs */
 .form-group {
@@ -632,6 +662,7 @@ select.form-control {
 }
 
 @media (max-width: 768px) {
+
     /* Hide desktop sidebar */
     .sidebar {
         left: -100%;
@@ -646,7 +677,8 @@ select.form-control {
     /* Adjust main content padding and margin */
     .main-layout {
         margin-left: 0;
-        padding: 16px 16px 80px 16px; /* extra bottom padding for bottom nav */
+        padding: 16px 16px 80px 16px;
+        /* extra bottom padding for bottom nav */
     }
 
     .page-header {
@@ -664,57 +696,74 @@ select.form-control {
         font-size: 22px;
     }
 
-    /* CARD-BASED TABLE ON MOBILE */
+    /* CARD-BASED TABLE ON MOBILE FOR BOTH .table AND .table-custom */
     .table-responsive {
         border: none;
+        overflow-x: visible;
     }
 
-    .table-custom {
+    .table-custom,
+    .table {
+        display: block;
+        width: 100%;
+        border: none !important;
+    }
+
+    .table-custom thead,
+    .table thead {
+        display: none;
+        /* hide table headers on mobile */
+    }
+
+    .table-custom tbody,
+    .table tbody {
         display: block;
         width: 100%;
     }
 
-    .table-custom thead {
-        display: none; /* hide table headers on mobile */
-    }
-
-    .table-custom tbody {
+    .table-custom tr,
+    .table tr {
         display: block;
-        width: 100%;
+        background: #ffffff;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 16px;
+        margin-bottom: 14px;
+        padding: 14px 16px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
     }
 
-    .table-custom tr {
-        display: block;
-        background: var(--card-bg);
-        border: 1px solid var(--border-color);
-        border-radius: var(--radius-md);
-        margin-bottom: 12px;
-        padding: 12px;
-        box-shadow: var(--shadow);
+    .table-custom tr:nth-child(even),
+    .table tr:nth-child(even) {
+        background: #ffffff;
     }
 
-    .table-custom td {
+    .table-custom td,
+    .table td {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 0;
-        border-bottom: 1px solid #f1f5f9;
+        padding: 10px 0;
+        border: none !important;
+        border-bottom: 1px dashed #e2e8f0 !important;
         font-size: 13px;
-        text-align: right;
+        text-align: right !important;
     }
 
-    .table-custom td:last-child {
-        border-bottom: none;
+    .table-custom td:last-child,
+    .table td:last-child {
+        border-bottom: none !important;
         justify-content: flex-end;
-        gap: 6px;
-        margin-top: 6px;
+        gap: 8px;
+        margin-top: 8px;
+        padding-top: 12px;
     }
 
     /* Add labels on mobile using data-label attribute */
-    .table-custom td::before {
+    .table-custom td::before,
+    .table td::before {
         content: attr(data-label);
         font-weight: 700;
-        color: var(--text-secondary);
+        color: #64748b;
         text-transform: capitalize;
         float: left;
         text-align: left;
@@ -722,18 +771,78 @@ select.form-control {
     }
 
     /* Keep action items aligned nicely */
-    .table-custom td:last-child::before {
+    .table-custom td:last-child::before,
+    .table td:last-child::before {
         content: none;
+    }
+
+    /* Mobile Responsive Filter Grids */
+    .search-filter-grid {
+        flex-direction: column !important;
+        width: 100% !important;
+    }
+
+    .search-filter-grid>div,
+    .search-filter-grid>input,
+    .search-filter-grid>select,
+    .search-filter-grid>button,
+    .search-filter-grid>a {
+        width: 100% !important;
+        min-width: 100% !important;
+    }
+
+    /* Mobile Responsive Grids inside Forms & Cards */
+    .row-grid,
+    .card-grid {
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+    }
+
+    /* Mobile Modal Bottom Sheet Design */
+    .modal,
+    .modal-overlay {
+        align-items: flex-end !important;
+        padding: 0 !important;
+    }
+
+    .modal-content {
+        max-width: 100% !important;
+        border-radius: 24px 24px 0 0 !important;
+        max-height: 85vh !important;
+        box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.15) !important;
+        animation: slideUpModal 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    }
+
+    @keyframes slideUpModal {
+        from {
+            transform: translateY(100%);
+        }
+
+        to {
+            transform: translateY(0);
+        }
     }
 }
 
 /* Animations */
 @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 @keyframes slideUp {
-    from { transform: translateY(20px); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
 }

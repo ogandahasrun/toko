@@ -141,18 +141,18 @@ $customers_result = $koneksi->query($query);
                             $is_over = ($limit > 0 && $piutang > $limit);
                         ?>
                         <tr>
-                            <td><?= $no++ ?></td>
-                            <td><strong><?= htmlspecialchars($c['nama']) ?></strong></td>
-                            <td><?= htmlspecialchars($c['no_hp'] ?: '-') ?></td>
-                            <td><?= htmlspecialchars($c['alamat'] ?: '-') ?></td>
-                            <td>Rp <?= number_format($limit, 0, ',', '.') ?></td>
-                            <td class="<?= $piutang > 0 ? 'text-danger font-bold' : 'text-muted' ?>">
+                            <td data-label="No"><?= $no++ ?></td>
+                            <td data-label="Nama Pelanggan"><strong><?= htmlspecialchars($c['nama']) ?></strong></td>
+                            <td data-label="No. HP"><?= htmlspecialchars($c['no_hp'] ?: '-') ?></td>
+                            <td data-label="Alamat"><?= htmlspecialchars($c['alamat'] ?: '-') ?></td>
+                            <td data-label="Limit Kredit">Rp <?= number_format($limit, 0, ',', '.') ?></td>
+                            <td data-label="Sisa Piutang" class="<?= $piutang > 0 ? 'text-danger font-bold' : 'text-muted' ?>">
                                 Rp <?= number_format($piutang, 0, ',', '.') ?>
                                 <?php if ($is_over): ?>
                                     <span class="badge badge-danger" style="margin-left: 6px;">Over Limit</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?= $c['total_transaksi'] ?> Transaksi</td>
+                            <td data-label="Total Transaksi"><?= $c['total_transaksi'] ?> Transaksi</td>
                             <td style="text-align: right; white-space: nowrap;">
                                 <button class="btn btn-sm btn-info" onclick="viewCustomerSales(<?= $c['id'] ?>, '<?= htmlspecialchars(addslashes($c['nama'])) ?>')">
                                     Riwayat Jual
