@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $koneksi->begin_transaction();
         try {
             $esc_pen = $koneksi->real_escape_string($no_penjualan);
-            $resP = $koneksi->query("SELECT sisa_piutang, total_jual, status_kredit, no_penjualan, nama_barang FROM penjualan WHERE no_penjualan = '$esc_pen'");
+            $resP = $koneksi->query("SELECT sisa_piutang, harga_jual, status_kredit, no_penjualan, nama_barang FROM penjualan WHERE no_penjualan = '$esc_pen'");
             if (!$resP || $resP->num_rows === 0) {
                 throw new Exception("Transaksi penjualan tidak ditemukan!");
             }
@@ -386,6 +386,21 @@ function openPayModal(noPenjualan = '', sisaPiutang = 0, namaBarang = '') {
     const inputJumlah = document.getElementById('pay_jumlah_bayar');
 
     if (noPenjualan) {
+        let optionExists = false;
+        for (let i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === noPenjualan) {
+                optionExists = true;
+                break;
+            }
+        }
+        if (!optionExists) {
+            const opt = document.createElement('option');
+            opt.value = noPenjualan;
+            opt.setAttribute('data-sisa', sisaPiutang);
+            opt.setAttribute('data-barang', namaBarang);
+            opt.textContent = noPenjualan + ' - ' + namaBarang + ' (Sisa: Rp ' + Number(sisaPiutang).toLocaleString('id-ID') + ')';
+            select.appendChild(opt);
+        }
         select.value = noPenjualan;
         sisaDisplay.value = 'Rp ' + Number(sisaPiutang).toLocaleString('id-ID');
         inputJumlah.max = sisaPiutang;
