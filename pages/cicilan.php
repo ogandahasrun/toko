@@ -6,59 +6,166 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $pelanggan_filter = isset($_GET['pelanggan_id']) ? (int)$_GET['pelanggan_id'] : 0;
 $status_filter = isset($_GET['status']) ? trim($_GET['status']) : 'belum_lunas';
 
-// Handle POST action (Bayar Cicilan)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'pay_installment') {
-    $no_penjualan = isset($_POST['no_penjualan']) ? trim($_POST['no_penjualan']) : '';
-    $jumlah_bayar = (double)$_POST['jumlah_bayar'];
-    $tanggal = $_POST['tanggal'];
-    $keterangan = trim($_POST['keterangan']);
+// Handle POST actions (Bayar Cicilan, Edit Cicilan, Hapus Cicilan)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $action = $_POST['action'];
 
-    if (!empty($no_penjualan) && $jumlah_bayar > 0 && !empty($tanggal)) {
-        $koneksi->begin_transaction();
-        try {
-            $esc_pen = $koneksi->real_escape_string($no_penjualan);
-            $resP = $koneksi->query("SELECT sisa_piutang, harga_jual, status_kredit, no_penjualan, nama_barang FROM penjualan WHERE no_penjualan = '$esc_pen'");
-            if (!$resP || $resP->num_rows === 0) {
-                throw new Exception("Transaksi penjualan tidak ditemukan!");
+    // 1. Bayar Cicilan Baru
+    if ($action === 'pay_installment') {
+        $no_penjualan = isset($_POST['no_penjualan']) ? trim($_POST['no_penjualan']) : '';
+        $jumlah_bayar = (double)$_POST['jumlah_bayar'];
+        $tanggal = $_POST['tanggal'];
+        $keterangan = trim($_POST['keterangan']);
+
+        if (!empty($no_penjualan) && $jumlah_bayar > 0 && !empty($tanggal)) {
+            $koneksi->begin_transaction();
+            try {
+                $esc_pen = $koneksi->real_escape_string($no_penjualan);
+                $resP = $koneksi->query("SELECT sisa_piutang, harga_jual, status_kredit, no_penjualan, nama_barang FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                if (!$resP || $resP->num_rows === 0) {
+                    throw new Exception("Transaksi penjualan tidak ditemukan!");
+                }
+                $pData = $resP->fetch_assoc();
+                $sisa = (double)$pData['sisa_piutang'];
+                $nama_brg = $pData['nama_barang'];
+
+                if ($sisa <= 0) {
+                    throw new Exception("Transaksi ini sudah lunas!");
+                }
+
+                if ($jumlah_bayar > $sisa) {
+                    throw new Exception("Jumlah pembayaran (Rp " . number_format($jumlah_bayar, 0, ',', '.') . ") melebihi sisa piutang (Rp " . number_format($sisa, 0, ',', '.') . ")!");
+                }
+
+                // Insert installment record
+                $stmtInst = $koneksi->prepare("INSERT INTO pembayaran_kredit (no_penjualan, tanggal, jumlah_bayar, keterangan) VALUES (?, ?, ?, ?)");
+                $stmtInst->bind_param("ssds", $no_penjualan, $tanggal, $jumlah_bayar, $keterangan);
+                $stmtInst->execute();
+                $stmtInst->close();
+
+                // Recalculate and synchronize remaining balance
+                syncPenjualanPiutang($koneksi, $no_penjualan);
+
+                $koneksi->commit();
+
+                // Get updated sisa and status
+                $resUpdated = $koneksi->query("SELECT sisa_piutang, status_kredit FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                $uData = $resUpdated ? $resUpdated->fetch_assoc() : ['sisa_piutang' => 0, 'status_kredit' => 'lunas'];
+                $newSisa = (double)$uData['sisa_piutang'];
+                $newStatus = $uData['status_kredit'];
+
+                $msg = ($newStatus === 'lunas') ? "Pembayaran cicilan berhasil! Transaksi $no_penjualan ($nama_brg) sekarang TELAH LUNAS." : "Pembayaran cicilan berhasil disimpan! Sisa piutang: Rp " . number_format($newSisa, 0, ',', '.');
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$msg', 'success'));</script>";
+            } catch (Exception $e) {
+                $koneksi->rollback();
+                $err = addslashes($e->getMessage());
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err', 'danger'));</script>";
             }
-            $pData = $resP->fetch_assoc();
-            $sisa = (double)$pData['sisa_piutang'];
-            $nama_brg = $pData['nama_barang'];
-
-            if ($sisa <= 0) {
-                throw new Exception("Transaksi ini sudah lunas!");
-            }
-
-            if ($jumlah_bayar > $sisa) {
-                throw new Exception("Jumlah pembayaran (Rp " . number_format($jumlah_bayar, 0, ',', '.') . ") melebihi sisa piutang (Rp " . number_format($sisa, 0, ',', '.') . ")!");
-            }
-
-            // Insert installment record
-            $stmtInst = $koneksi->prepare("INSERT INTO pembayaran_kredit (no_penjualan, tanggal, jumlah_bayar, keterangan) VALUES (?, ?, ?, ?)");
-            $stmtInst->bind_param("ssds", $no_penjualan, $tanggal, $jumlah_bayar, $keterangan);
-            $stmtInst->execute();
-            $stmtInst->close();
-
-            // Calculate new remaining balance
-            $newSisa = max(0, $sisa - $jumlah_bayar);
-            $newStatus = ($newSisa <= 0) ? 'lunas' : 'belum_lunas';
-
-            // Update sale record
-            $stmtUpd = $koneksi->prepare("UPDATE penjualan SET sisa_piutang = ?, status_kredit = ? WHERE no_penjualan = ?");
-            $stmtUpd->bind_param("dss", $newSisa, $newStatus, $no_penjualan);
-            $stmtUpd->execute();
-            $stmtUpd->close();
-
-            $koneksi->commit();
-            $msg = ($newStatus === 'lunas') ? "Pembayaran cicilan berhasil! Transaksi $no_penjualan ($nama_brg) sekarang TELAH LUNAS." : "Pembayaran cicilan berhasil disimpan! Sisa piutang: Rp " . number_format($newSisa, 0, ',', '.');
-            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$msg', 'success'));</script>";
-        } catch (Exception $e) {
-            $koneksi->rollback();
-            $err = addslashes($e->getMessage());
-            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err', 'danger'));</script>";
+        } else {
+            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Mohon lengkapi semua data pembayaran!', 'warning'));</script>";
         }
-    } else {
-        $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Mohon lengkapi semua data pembayaran!', 'warning'));</script>";
+    }
+
+    // 2. Edit Cicilan yang Sudah Ada
+    if ($action === 'edit_installment') {
+        $inst_id = (int)$_POST['id'];
+        $no_penjualan = isset($_POST['no_penjualan']) ? trim($_POST['no_penjualan']) : '';
+        $jumlah_bayar = (double)$_POST['jumlah_bayar'];
+        $tanggal = $_POST['tanggal'];
+        $keterangan = trim($_POST['keterangan']);
+
+        if ($inst_id > 0 && !empty($no_penjualan) && $jumlah_bayar > 0 && !empty($tanggal)) {
+            $koneksi->begin_transaction();
+            try {
+                $esc_pen = $koneksi->real_escape_string($no_penjualan);
+                
+                // Cek eksistensi data cicilan
+                $chk = $koneksi->query("SELECT id FROM pembayaran_kredit WHERE id = $inst_id AND no_penjualan = '$esc_pen'");
+                if (!$chk || $chk->num_rows === 0) {
+                    throw new Exception("Data cicilan tidak ditemukan!");
+                }
+
+                // Cek data penjualan terkait
+                $resP = $koneksi->query("SELECT harga_jual, nama_barang FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                if (!$resP || $resP->num_rows === 0) {
+                    throw new Exception("Transaksi penjualan tidak ditemukan!");
+                }
+                $sale = $resP->fetch_assoc();
+                $harga_jual = (double)$sale['harga_jual'];
+
+                // Hitung total cicilan LAIN di luar baris yang sedang diedit ini
+                $resOther = $koneksi->query("SELECT COALESCE(SUM(jumlah_bayar), 0) AS total_lain FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen' AND id != $inst_id");
+                $total_lain = (double)$resOther->fetch_assoc()['total_lain'];
+
+                if ($total_lain + $jumlah_bayar > $harga_jual) {
+                    $max_bayar = max(0, $harga_jual - $total_lain);
+                    throw new Exception("Nominal pembayaran baru melebihi total harga jual (Rp " . number_format($harga_jual, 0, ',', '.') . ")! Maksimal untuk cicilan ini adalah Rp " . number_format($max_bayar, 0, ',', '.'));
+                }
+
+                // Update baris cicilan
+                $stmtUpd = $koneksi->prepare("UPDATE pembayaran_kredit SET tanggal = ?, jumlah_bayar = ?, keterangan = ? WHERE id = ?");
+                $stmtUpd->bind_param("sdsi", $tanggal, $jumlah_bayar, $keterangan, $inst_id);
+                $stmtUpd->execute();
+                $stmtUpd->close();
+
+                // Hitung ulang dan sinkronkan sisa hutang di penjualan
+                syncPenjualanPiutang($koneksi, $no_penjualan);
+
+                $koneksi->commit();
+
+                // Ambil data terbaru sisa piutang
+                $resUp = $koneksi->query("SELECT sisa_piutang, status_kredit FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                $uData = $resUp ? $resUp->fetch_assoc() : ['sisa_piutang' => 0];
+                $newSisa = (double)$uData['sisa_piutang'];
+
+                $msg = "Perubahan cicilan berhasil disimpan! Sisa piutang sekarang: Rp " . number_format($newSisa, 0, ',', '.');
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$msg', 'success'));</script>";
+            } catch (Exception $e) {
+                $koneksi->rollback();
+                $err = addslashes($e->getMessage());
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err', 'danger'));</script>";
+            }
+        } else {
+            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Mohon lengkapi semua data koreksi cicilan!', 'warning'));</script>";
+        }
+    }
+
+    // 3. Hapus Cicilan
+    if ($action === 'delete_installment') {
+        $inst_id = (int)$_POST['id'];
+        $no_penjualan = isset($_POST['no_penjualan']) ? trim($_POST['no_penjualan']) : '';
+
+        if ($inst_id > 0 && !empty($no_penjualan)) {
+            $koneksi->begin_transaction();
+            try {
+                $esc_pen = $koneksi->real_escape_string($no_penjualan);
+                $chk = $koneksi->query("SELECT id FROM pembayaran_kredit WHERE id = $inst_id AND no_penjualan = '$esc_pen'");
+                if (!$chk || $chk->num_rows === 0) {
+                    throw new Exception("Data cicilan tidak ditemukan!");
+                }
+
+                $stmtDel = $koneksi->prepare("DELETE FROM pembayaran_kredit WHERE id = ?");
+                $stmtDel->bind_param("i", $inst_id);
+                $stmtDel->execute();
+                $stmtDel->close();
+
+                // Hitung ulang dan sinkronkan sisa hutang di penjualan
+                syncPenjualanPiutang($koneksi, $no_penjualan);
+
+                $koneksi->commit();
+
+                // Ambil data terbaru sisa piutang
+                $resUp = $koneksi->query("SELECT sisa_piutang FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                $newSisa = $resUp ? (double)$resUp->fetch_assoc()['sisa_piutang'] : 0;
+
+                $msg = "Data cicilan berhasil dihapus! Sisa piutang ter-update: Rp " . number_format($newSisa, 0, ',', '.');
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$msg', 'success'));</script>";
+            } catch (Exception $e) {
+                $koneksi->rollback();
+                $err = addslashes($e->getMessage());
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err', 'danger'));</script>";
+            }
+        }
     }
 }
 
@@ -350,24 +457,25 @@ if ($resUnpaid) {
 
 <!-- Modal Riwayat Cicilan -->
 <div id="modalHistory" class="modal">
-    <div class="modal-content" style="max-width: 650px;">
+    <div class="modal-content" style="max-width: 750px;">
         <div class="modal-header">
             <h3 class="modal-title" id="historyTitle">Riwayat Cicilan</h3>
             <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
         </div>
         <div class="modal-body">
             <div class="table-responsive">
-                <table class="table">
+                <table class="table" style="vertical-align: middle;">
                     <thead>
                         <tr>
-                            <th>No</th>
-                            <th>Tanggal</th>
-                            <th>Jumlah Bayar</th>
+                            <th style="width: 40px;">No</th>
+                            <th style="width: 110px;">Tanggal</th>
+                            <th style="text-align: right; width: 140px;">Jumlah Bayar</th>
                             <th>Keterangan</th>
+                            <th style="text-align: right; width: 130px;">Aksi</th>
                         </tr>
                     </thead>
                     <tbody id="historyTableBody">
-                        <tr><td colspan="4" class="text-center">Memuat data...</td></tr>
+                        <tr><td colspan="5" class="text-center py-3">Memuat data...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -378,7 +486,59 @@ if ($resUnpaid) {
     </div>
 </div>
 
+<!-- Modal Edit Cicilan -->
+<div id="modalEditInstallment" class="modal" style="z-index: 2200;">
+    <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3 class="modal-title">Koreksi / Edit Pembayaran Cicilan</h3>
+            <button class="modal-close" onclick="closeEditInstallmentModal()">&times;</button>
+        </div>
+        <form method="POST" action="index.php?page=cicilan">
+            <input type="hidden" name="action" value="edit_installment">
+            <input type="hidden" name="id" id="edit_inst_id">
+            <input type="hidden" name="no_penjualan" id="edit_inst_no_penjualan">
+            
+            <div class="modal-body">
+                <div class="form-group mb-3">
+                    <label class="form-label">No. Transaksi</label>
+                    <input type="text" id="edit_inst_trx_display" class="form-control" readonly style="background: #f1f5f9; font-weight: 700; color: #475569;">
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Tanggal Pembayaran <span class="text-danger">*</span></label>
+                    <input type="date" name="tanggal" id="edit_inst_tanggal" class="form-control" required>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Jumlah Pembayaran (Rp) <span class="text-danger">*</span></label>
+                    <input type="number" name="jumlah_bayar" id="edit_inst_jumlah_bayar" class="form-control font-bold" required min="1" placeholder="0">
+                    <small class="text-muted">Sisa piutang penjualan akan otomatis dikalkulasi ulang.</small>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Keterangan / Catatan</label>
+                    <input type="text" name="keterangan" id="edit_inst_keterangan" class="form-control" placeholder="Contoh: Cicilan Ke-1 / Koreksi Kasir">
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-light" onclick="closeEditInstallmentModal()">Batal</button>
+                <button type="submit" class="btn btn-primary">Simpan Koreksi</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Form Submit Hidden for Delete Installment -->
+<form id="formDeleteInstallment" method="POST" action="index.php?page=cicilan" style="display: none;">
+    <input type="hidden" name="action" value="delete_installment">
+    <input type="hidden" name="id" id="delete_inst_id">
+    <input type="hidden" name="no_penjualan" id="delete_inst_no_penjualan">
+</form>
+
 <script>
+let currentHistoryTrx = '';
+
 function openPayModal(noPenjualan = '', sisaPiutang = 0, namaBarang = '') {
     const modal = document.getElementById('modalPayInstallment');
     const select = document.getElementById('pay_no_penjualan');
@@ -441,9 +601,10 @@ function onSelectSaleChange() {
 }
 
 function viewHistory(noPenjualan) {
+    currentHistoryTrx = noPenjualan;
     document.getElementById('historyTitle').innerText = 'Riwayat Cicilan - ' + noPenjualan;
     const body = document.getElementById('historyTableBody');
-    body.innerHTML = '<tr><td colspan="4" class="text-center py-3">Memuat data riwayat...</td></tr>';
+    body.innerHTML = '<tr><td colspan="5" class="text-center py-3">Memuat data riwayat...</td></tr>';
     const modal = document.getElementById('modalHistory');
     if (modal) {
         modal.classList.add('active');
@@ -454,24 +615,33 @@ function viewHistory(noPenjualan) {
         .then(response => response.json())
         .then(data => {
             if (data.length === 0) {
-                body.innerHTML = '<tr><td colspan="4" class="text-center py-3 text-muted">Belum ada riwayat pembayaran cicilan.</td></tr>';
+                body.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">Belum ada riwayat pembayaran cicilan.</td></tr>';
                 return;
             }
             let html = '';
             data.forEach((row, index) => {
+                const escKet = (row.keterangan || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
                 html += `
                     <tr>
                         <td>${index + 1}</td>
                         <td>${row.tanggal}</td>
-                        <td class="text-success font-bold">Rp ${Number(row.jumlah_bayar).toLocaleString('id-ID')}</td>
+                        <td style="text-align: right;" class="text-success font-bold">Rp ${Number(row.jumlah_bayar).toLocaleString('id-ID')}</td>
                         <td>${row.keterangan || '-'}</td>
+                        <td style="text-align: right; white-space: nowrap;">
+                            <button type="button" class="btn btn-sm btn-warning" onclick="openEditInstallmentModal(${row.id}, '${row.no_penjualan}', '${row.tanggal}', ${row.jumlah_bayar}, '${escKet}')">
+                                Edit
+                            </button>
+                            <button type="button" class="btn btn-sm btn-danger" onclick="confirmDeleteInstallment(${row.id}, '${row.no_penjualan}', ${row.jumlah_bayar}, '${row.tanggal}')">
+                                Hapus
+                            </button>
+                        </td>
                     </tr>
                 `;
             });
             body.innerHTML = html;
         })
         .catch(err => {
-            body.innerHTML = '<tr><td colspan="4" class="text-center text-danger py-3">Gagal memuat data riwayat cicilan.</td></tr>';
+            body.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Gagal memuat data riwayat cicilan.</td></tr>';
         });
 }
 
@@ -480,6 +650,38 @@ function closeHistoryModal() {
     if (modal) {
         modal.classList.remove('active');
         modal.style.display = 'none';
+    }
+}
+
+function openEditInstallmentModal(id, noPenjualan, tanggal, jumlahBayar, keterangan) {
+    document.getElementById('edit_inst_id').value = id;
+    document.getElementById('edit_inst_no_penjualan').value = noPenjualan;
+    document.getElementById('edit_inst_trx_display').value = noPenjualan;
+    document.getElementById('edit_inst_tanggal').value = tanggal;
+    document.getElementById('edit_inst_jumlah_bayar').value = jumlahBayar;
+    document.getElementById('edit_inst_keterangan').value = keterangan || '';
+
+    const modal = document.getElementById('modalEditInstallment');
+    if (modal) {
+        modal.classList.add('active');
+        modal.style.display = 'flex';
+    }
+}
+
+function closeEditInstallmentModal() {
+    const modal = document.getElementById('modalEditInstallment');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.display = 'none';
+    }
+}
+
+function confirmDeleteInstallment(id, noPenjualan, jumlahBayar, tanggal) {
+    const formatted = Number(jumlahBayar).toLocaleString('id-ID');
+    if (confirm(`Yakin ingin menghapus riwayat cicilan tanggal ${tanggal} senilai Rp ${formatted} pada transaksi ${noPenjualan}?\n\nSisa piutang transaksi akan otomatis dikalkulasi ulang!`)) {
+        document.getElementById('delete_inst_id').value = id;
+        document.getElementById('delete_inst_no_penjualan').value = noPenjualan;
+        document.getElementById('formDeleteInstallment').submit();
     }
 }
 </script>

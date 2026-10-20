@@ -83,8 +83,150 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $stmtDP->close();
                 }
 
+                // Pastikan integritas sisa piutang & status kredit terhitung akurat
+                syncPenjualanPiutang($koneksi, $no_penjualan);
+
                 $koneksi->commit();
                 $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Transaksi penjualan berhasil disimpan!', 'success'));</script>";
+            } catch (Exception $e) {
+                $koneksi->rollback();
+                $err = addslashes($e->getMessage());
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('$err', 'danger'));</script>";
+            }
+        } else {
+            $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Mohon lengkapi Nama Barang dan Harga Jual!', 'warning'));</script>";
+        }
+    }
+
+    // Edit Sale Transaction
+    if ($action === 'edit_penjualan') {
+        $no_penjualan = trim($_POST['no_penjualan']);
+        $tanggal = $_POST['tanggal'];
+        $pelanggan_id = !empty($_POST['pelanggan_id']) ? (int)$_POST['pelanggan_id'] : null;
+        $nama_barang = trim($_POST['nama_barang']);
+        $harga_beli = (double)$_POST['harga_beli'];
+        $harga_jual = (double)$_POST['harga_jual'];
+        $tipe_pembayaran = (isset($_POST['tipe_pembayaran']) && $_POST['tipe_pembayaran'] === 'kredit') ? 'kredit' : 'tunai';
+        $tempo_tipe = isset($_POST['tempo_tipe']) ? $_POST['tempo_tipe'] : 'n/a';
+        $jatuh_tempo = !empty($_POST['jatuh_tempo']) ? $_POST['jatuh_tempo'] : null;
+        $catatan = trim($_POST['catatan']);
+        $dp_nominal = isset($_POST['dp_nominal']) ? (double)$_POST['dp_nominal'] : 0;
+
+        if (!empty($no_penjualan) && !empty($tanggal) && !empty($nama_barang) && $harga_jual > 0) {
+            $koneksi->begin_transaction();
+            try {
+                $esc_pen = $koneksi->real_escape_string($no_penjualan);
+                $resSale = $koneksi->query("SELECT * FROM penjualan WHERE no_penjualan = '$esc_pen'");
+                if (!$resSale || $resSale->num_rows === 0) {
+                    throw new Exception("Transaksi penjualan tidak ditemukan!");
+                }
+                $oldSale = $resSale->fetch_assoc();
+
+                // Ambil semua data cicilan yang sudah tercatat
+                $resInst = $koneksi->query("SELECT id, jumlah_bayar, keterangan FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen' ORDER BY tanggal ASC, id ASC");
+                $instList = [];
+                $total_cicilan = 0;
+                if ($resInst) {
+                    while ($row = $resInst->fetch_assoc()) {
+                        $instList[] = $row;
+                        $total_cicilan += (double)$row['jumlah_bayar'];
+                    }
+                }
+                $count_cicilan = count($instList);
+
+                if ($tipe_pembayaran === 'tunai') {
+                    if ($count_cicilan > 1) {
+                        throw new Exception("Transaksi ini sudah memiliki $count_cicilan kali riwayat pembayaran cicilan! Tidak dapat langsung diubah ke Tunai. Silakan selesaikan sisa hutang melalui menu Cicilan.");
+                    }
+
+                    // Hapus DP jika sebelumnya ada 1 baris DP awal
+                    if ($count_cicilan === 1) {
+                        $koneksi->query("DELETE FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen'");
+                    }
+
+                    $sisa_piutang = 0;
+                    $status_kredit = 'lunas';
+                    $jumlah_dibayar = $harga_jual;
+                    $tempo_tipe = 'n/a';
+                    $jatuh_tempo = null;
+
+                    $stmtUpd = $koneksi->prepare("
+                        UPDATE penjualan 
+                        SET tanggal = ?, pelanggan_id = ?, nama_barang = ?, harga_beli = ?, harga_jual = ?, jumlah_dibayar = ?, sisa_piutang = ?, tipe_pembayaran = ?, status_kredit = ?, tempo_tipe = ?, jatuh_tempo = ?, catatan = ? 
+                        WHERE no_penjualan = ?
+                    ");
+                    $stmtUpd->bind_param("sisddddssssss", $tanggal, $pelanggan_id, $nama_barang, $harga_beli, $harga_jual, $jumlah_dibayar, $sisa_piutang, $tipe_pembayaran, $status_kredit, $tempo_tipe, $jatuh_tempo, $catatan, $no_penjualan);
+                    $stmtUpd->execute();
+                    $stmtUpd->close();
+                } else {
+                    // Kredit
+                    if ($harga_jual < $total_cicilan) {
+                        $fmtJual = number_format($harga_jual, 0, ',', '.');
+                        $fmtCicilan = number_format($total_cicilan, 0, ',', '.');
+                        throw new Exception("Harga jual baru (Rp $fmtJual) tidak boleh lebih kecil dari total pembayaran cicilan yang sudah masuk (Rp $fmtCicilan)!");
+                    }
+
+                    // Jika diubah dari tunai ke kredit atau penyesuaian DP awal (jika hanya ada 1 record cicilan)
+                    if ($count_cicilan === 0 && $dp_nominal > 0) {
+                        $ket = "Pembayaran Uang Muka / DP awal";
+                        $stmtDP = $koneksi->prepare("INSERT INTO pembayaran_kredit (no_penjualan, tanggal, jumlah_bayar, keterangan) VALUES (?, ?, ?, ?)");
+                        $stmtDP->bind_param("ssds", $no_penjualan, $tanggal, $dp_nominal, $ket);
+                        $stmtDP->execute();
+                        $stmtDP->close();
+                    } elseif ($count_cicilan === 1 && isset($_POST['dp_nominal'])) {
+                        $firstInstId = (int)$instList[0]['id'];
+                        if ($dp_nominal > 0) {
+                            $stmtUpdDP = $koneksi->prepare("UPDATE pembayaran_kredit SET jumlah_bayar = ? WHERE id = ?");
+                            $stmtUpdDP->bind_param("di", $dp_nominal, $firstInstId);
+                            $stmtUpdDP->execute();
+                            $stmtUpdDP->close();
+                        } else {
+                            $koneksi->query("DELETE FROM pembayaran_kredit WHERE id = $firstInstId");
+                        }
+                    }
+
+                    // Validasi limit kredit pelanggan
+                    if ($pelanggan_id > 0) {
+                        $resCust = $koneksi->query("SELECT nama, limit_kredit FROM pelanggan WHERE id = $pelanggan_id");
+                        if ($resCust && $resCust->num_rows > 0) {
+                            $cust = $resCust->fetch_assoc();
+                            $limit_kredit = (double)$cust['limit_kredit'];
+                            $nama_pel = $cust['nama'];
+
+                            $resOut = $koneksi->query("SELECT SUM(sisa_piutang) as total FROM penjualan WHERE pelanggan_id = $pelanggan_id AND status_kredit = 'belum_lunas' AND no_penjualan != '$esc_pen'");
+                            $curOut = 0;
+                            if ($resOut && $ro = $resOut->fetch_assoc()) {
+                                $curOut = $ro['total'] ? (double)$ro['total'] : 0;
+                            }
+
+                            $resBayarTemp = $koneksi->query("SELECT COALESCE(SUM(jumlah_bayar), 0) AS total FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen'");
+                            $paidTemp = $resBayarTemp ? (double)$resBayarTemp->fetch_assoc()['total'] : 0;
+                            $estSisa = max(0, $harga_jual - $paidTemp);
+
+                            if ($limit_kredit > 0 && ($curOut + $estSisa > $limit_kredit)) {
+                                $fmtLimit = number_format($limit_kredit, 0, ',', '.');
+                                $fmtOut = number_format($curOut, 0, ',', '.');
+                                $fmtNew = number_format($estSisa, 0, ',', '.');
+                                throw new Exception("Peringatan Limit Kredit! Pelanggan '$nama_pel' melebihi limit. (Limit: Rp $fmtLimit, Piutang Transaksi Lain: Rp $fmtOut, Estimasi Sisa Piutang Transaksi Ini: Rp $fmtNew)");
+                            }
+                        }
+                    }
+
+                    $stmtUpd = $koneksi->prepare("
+                        UPDATE penjualan 
+                        SET tanggal = ?, pelanggan_id = ?, nama_barang = ?, harga_beli = ?, harga_jual = ?, tipe_pembayaran = 'kredit', tempo_tipe = ?, jatuh_tempo = ?, catatan = ? 
+                        WHERE no_penjualan = ?
+                    ");
+                    $stmtUpd->bind_param("sisdsssss", $tanggal, $pelanggan_id, $nama_barang, $harga_beli, $harga_jual, $tempo_tipe, $jatuh_tempo, $catatan, $no_penjualan);
+                    $stmtUpd->execute();
+                    $stmtUpd->close();
+
+                    // Sinkronkan sisa piutang, status lunas, dan total terbayar
+                    syncPenjualanPiutang($koneksi, $no_penjualan);
+                }
+
+                $koneksi->commit();
+                $alert = "<script>window.addEventListener('DOMContentLoaded', () => showToast('Perubahan transaksi penjualan berhasil disimpan!', 'success'));</script>";
             } catch (Exception $e) {
                 $koneksi->rollback();
                 $err = addslashes($e->getMessage());
@@ -278,6 +420,9 @@ $sales_list = $koneksi->query($sales_query);
                                 <button class="btn btn-sm btn-light" onclick="printReceipt('<?= htmlspecialchars($s['no_penjualan']) ?>')">
                                     Cetak
                                 </button>
+                                <button class="btn btn-sm btn-warning" onclick="openEditSaleModal('<?= htmlspecialchars($s['no_penjualan']) ?>')">
+                                    Edit
+                                </button>
                                 <?php if ($s['sisa_piutang'] > 0): ?>
                                     <a href="index.php?page=cicilan&search=<?= urlencode($s['no_penjualan']) ?>" class="btn btn-sm btn-success">
                                         Bayar Cicilan
@@ -451,7 +596,137 @@ $sales_list = $koneksi->query($sales_query);
     </div>
 </div>
 
+<!-- Modal Edit Transaksi Penjualan -->
+<div id="modalEditSale" class="modal">
+    <div class="modal-content" style="max-width: 720px;">
+        <div class="modal-header">
+            <h3 class="modal-title">Koreksi / Edit Transaksi Penjualan</h3>
+            <button class="modal-close" onclick="closeEditSaleModal()">&times;</button>
+        </div>
+        <form method="POST" action="index.php?page=penjualan" id="formEditSale">
+            <input type="hidden" name="action" value="edit_penjualan">
+            
+            <div class="modal-body">
+                <div class="row-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group mb-3">
+                        <label class="form-label">No. Transaksi</label>
+                        <input type="text" name="no_penjualan" id="edit_sale_no" class="form-control font-bold" readonly style="background: #f1f5f9; color: #475569;">
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">Tanggal Transaksi <span class="text-danger">*</span></label>
+                        <input type="date" name="tanggal" id="edit_sale_tanggal" class="form-control" required>
+                    </div>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Pelanggan</label>
+                    <select name="pelanggan_id" id="edit_sale_pelanggan_id" class="form-control">
+                        <option value="">-- Pelanggan Umum / Tunai --</option>
+                        <?php foreach ($pelanggan_list as $pid => $pinfo): ?>
+                            <option value="<?= $pid ?>" data-limit="<?= $pinfo['limit_kredit'] ?>"><?= htmlspecialchars($pinfo['nama']) ?> (Limit: Rp <?= number_format($pinfo['limit_kredit'], 0, ',', '.') ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Nama Barang <span class="text-danger">*</span></label>
+                    <input type="text" name="nama_barang" id="edit_sale_nama_barang" class="form-control" required style="font-size: 15px; font-weight: 600;">
+                </div>
+
+                <div class="row-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group mb-3">
+                        <label class="form-label">Harga Beli (Modal) <span class="text-danger">*</span></label>
+                        <input type="number" name="harga_beli" id="edit_sale_harga_beli" class="form-control" required min="0" oninput="calculateEditSaleMargin()">
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">Harga Jual <span class="text-danger">*</span></label>
+                        <input type="number" name="harga_jual" id="edit_sale_harga_jual" class="form-control font-bold" required min="1" oninput="calculateEditSaleMargin()">
+                    </div>
+                </div>
+
+                <!-- Live Margin & Keuntungan Display -->
+                <div class="p-3 mb-3" style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="text-secondary" style="font-size: 13px;">Keuntungan / Laba Gross:</span>
+                        <h4 id="edit_display_keuntungan" style="margin: 0; color: #16a34a; font-weight: 800;">Rp 0</h4>
+                    </div>
+                    <div>
+                        <span class="text-secondary" style="font-size: 13px;">Margin %:</span>
+                        <h4 id="edit_display_margin_pct" style="margin: 0; color: #16a34a; font-weight: 800;">0%</h4>
+                    </div>
+                </div>
+
+                <div class="row-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group mb-3">
+                        <label class="form-label">Tipe Pembayaran</label>
+                        <select name="tipe_pembayaran" id="edit_sale_tipe" class="form-control" onchange="onEditSaleTypeChange()">
+                            <option value="tunai">Tunai (Lunas Penuh)</option>
+                            <option value="kredit">Kredit / Cicilan</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group mb-3" id="edit_box_dp">
+                        <label class="form-label">Uang Muka / DP Awal (Rp)</label>
+                        <input type="number" name="dp_nominal" id="edit_sale_dp" class="form-control" min="0" placeholder="0" oninput="calculateEditSaleMargin()">
+                        <small class="text-muted" id="edit_sale_dp_hint">Nominal DP awal</small>
+                    </div>
+                </div>
+
+                <!-- Existing installments notice (if credit) -->
+                <div id="edit_sale_history_notice" class="p-3 mb-3" style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="color: #1e40af; font-size: 13px;">Riwayat Pembayaran Cicilan:</strong>
+                            <div id="edit_sale_paid_info" style="font-size: 13px; color: #1e3a8a; margin-top: 2px;"></div>
+                        </div>
+                        <div style="text-align: right;">
+                            <span class="text-secondary" style="font-size: 12px;">Sisa Piutang Setelah Edit:</span>
+                            <h4 id="edit_display_sisa_piutang" style="margin: 0; font-weight: 800; color: #dc2626;">Rp 0</h4>
+                        </div>
+                    </div>
+                    <small class="text-muted" style="display: block; margin-top: 6px; font-size: 11px;">
+                        * Untuk mengoreksi nominal atau menghapus riwayat cicilan satuan, silakan gunakan menu <strong>Cicilan -> Riwayat</strong>.
+                    </small>
+                </div>
+
+                <div id="edit_sale_credit_terms" class="row-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group mb-3">
+                        <label class="form-label">Tempo Pembayaran</label>
+                        <select name="tempo_tipe" id="edit_sale_tempo_tipe" class="form-control">
+                            <option value="n/a">Tidak Ada / Tunai</option>
+                            <option value="1_minggu">1 Minggu</option>
+                            <option value="2_minggu">2 Minggu</option>
+                            <option value="1_bulan">1 Bulan</option>
+                            <option value="3_bulan">3 Bulan</option>
+                            <option value="manual">Manual / Tanggal Bebas</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group mb-3">
+                        <label class="form-label">Jatuh Tempo (Jika Kredit)</label>
+                        <input type="date" name="jatuh_tempo" id="edit_sale_jatuh_tempo" class="form-control">
+                    </div>
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="form-label">Catatan Transaksi</label>
+                    <textarea name="catatan" id="edit_sale_catatan" class="form-control" rows="2" placeholder="Catatan tambahan..."></textarea>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-light" onclick="closeEditSaleModal()">Batal</button>
+                <button type="submit" class="btn btn-primary">Simpan Perubahan Penjualan</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <script>
+let editSaleData = null;
+
 function openSaleModal() {
     const modal = document.getElementById('modalNewSale');
     if (modal) {
@@ -497,6 +772,134 @@ function calculateSaleMargin() {
         statusBox.style.borderColor = '#fecaca';
     }
 }
+
+function openEditSaleModal(noPenjualan) {
+    const modal = document.getElementById('modalEditSale');
+    fetch('index.php?ajax_sale_details=1&no_penjualan=' + encodeURIComponent(noPenjualan))
+        .then(res => res.json())
+        .then(res => {
+            if (!res.success) {
+                showToast(res.message || 'Gagal memuat detail transaksi', 'danger');
+                return;
+            }
+            const d = res.data;
+            editSaleData = d;
+
+            document.getElementById('edit_sale_no').value = d.no_penjualan;
+            document.getElementById('edit_sale_tanggal').value = d.tanggal;
+            document.getElementById('edit_sale_pelanggan_id').value = d.pelanggan_id || '';
+            document.getElementById('edit_sale_nama_barang').value = d.nama_barang;
+            document.getElementById('edit_sale_harga_beli').value = d.harga_beli;
+            document.getElementById('edit_sale_harga_jual').value = d.harga_jual;
+            document.getElementById('edit_sale_tipe').value = d.tipe_pembayaran;
+            document.getElementById('edit_sale_tempo_tipe').value = d.tempo_tipe || 'n/a';
+            document.getElementById('edit_sale_jatuh_tempo').value = d.jatuh_tempo || '';
+            document.getElementById('edit_sale_catatan').value = d.catatan || '';
+
+            const totalCicilanPaid = parseFloat(d.total_terbayar_cicilan) || 0;
+            const cicilanCount = parseInt(d.total_cicilan_count) || 0;
+
+            const noticeBox = document.getElementById('edit_sale_history_notice');
+            const dpBox = document.getElementById('edit_box_dp');
+            const dpInput = document.getElementById('edit_sale_dp');
+            const dpHint = document.getElementById('edit_sale_dp_hint');
+            const tipeSelect = document.getElementById('edit_sale_tipe');
+
+            if (cicilanCount > 1) {
+                noticeBox.style.display = 'block';
+                document.getElementById('edit_sale_paid_info').innerText = `${cicilanCount} kali pembayaran terdata (Total: Rp ${totalCicilanPaid.toLocaleString('id-ID')})`;
+                dpBox.style.display = 'none';
+                tipeSelect.value = 'kredit';
+                tipeSelect.disabled = true;
+            } else if (cicilanCount === 1) {
+                noticeBox.style.display = 'block';
+                document.getElementById('edit_sale_paid_info').innerText = `1 pembayaran cicilan/DP terdata senilai Rp ${totalCicilanPaid.toLocaleString('id-ID')}`;
+                dpBox.style.display = 'block';
+                dpInput.value = totalCicilanPaid;
+                dpHint.innerText = 'Ubah nominal untuk menyesuaikan DP awal';
+                tipeSelect.disabled = false;
+            } else {
+                noticeBox.style.display = 'none';
+                dpBox.style.display = (d.tipe_pembayaran === 'kredit') ? 'block' : 'none';
+                dpInput.value = 0;
+                dpHint.innerText = 'Nominal DP awal';
+                tipeSelect.disabled = false;
+            }
+
+            onEditSaleTypeChange();
+            calculateEditSaleMargin();
+
+            modal.classList.add('active');
+            modal.style.display = 'flex';
+        })
+        .catch(err => {
+            showToast('Gagal memuat data transaksi', 'danger');
+        });
+}
+
+function closeEditSaleModal() {
+    const modal = document.getElementById('modalEditSale');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.display = 'none';
+        document.getElementById('edit_sale_tipe').disabled = false;
+    }
+}
+
+function onEditSaleTypeChange() {
+    const tipe = document.getElementById('edit_sale_tipe').value;
+    const creditTerms = document.getElementById('edit_sale_credit_terms');
+    const dpBox = document.getElementById('edit_box_dp');
+    const noticeBox = document.getElementById('edit_sale_history_notice');
+
+    const cicilanCount = editSaleData ? parseInt(editSaleData.total_cicilan_count) || 0 : 0;
+
+    if (tipe === 'kredit') {
+        creditTerms.style.display = 'grid';
+        if (cicilanCount <= 1) {
+            dpBox.style.display = 'block';
+        }
+    } else {
+        creditTerms.style.display = 'none';
+        dpBox.style.display = 'none';
+        noticeBox.style.display = 'none';
+    }
+    calculateEditSaleMargin();
+}
+
+function calculateEditSaleMargin() {
+    const beli = parseFloat(document.getElementById('edit_sale_harga_beli').value) || 0;
+    const jual = parseFloat(document.getElementById('edit_sale_harga_jual').value) || 0;
+    const tipe = document.getElementById('edit_sale_tipe').value;
+
+    const laba = jual - beli;
+    const marginPct = (beli > 0) ? ((laba / beli) * 100).toFixed(1) : 0;
+
+    document.getElementById('edit_display_keuntungan').innerText = 'Rp ' + laba.toLocaleString('id-ID');
+    document.getElementById('edit_display_margin_pct').innerText = marginPct + '%';
+
+    if (tipe === 'kredit') {
+        const cicilanCount = editSaleData ? parseInt(editSaleData.total_cicilan_count) || 0 : 0;
+        let paid = 0;
+        if (cicilanCount > 1) {
+            paid = parseFloat(editSaleData.total_terbayar_cicilan) || 0;
+        } else {
+            paid = parseFloat(document.getElementById('edit_sale_dp').value) || 0;
+        }
+        const sisa = Math.max(0, jual - paid);
+        document.getElementById('edit_display_sisa_piutang').innerText = 'Rp ' + sisa.toLocaleString('id-ID');
+    }
+}
+
+// Make sure disabled inputs are enabled before submitting
+document.addEventListener('DOMContentLoaded', () => {
+    const formEdit = document.getElementById('formEditSale');
+    if (formEdit) {
+        formEdit.addEventListener('submit', () => {
+            document.getElementById('edit_sale_tipe').disabled = false;
+        });
+    }
+});
 
 function confirmDeleteSale(noPenjualan, namaBarang) {
     if (confirm('Apakah Anda yakin ingin menghapus transaksi ' + noPenjualan + ' (' + namaBarang + ')?')) {

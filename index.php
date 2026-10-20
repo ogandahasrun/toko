@@ -2,6 +2,7 @@
 session_start();
 define('host', true); // Definisikan konstanta host untuk keamanan sub-halaman
 require_once 'koneksi.php';
+require_once 'helpers.php';
 
 // Redirect to login if not logged in
 if (!isset($_SESSION['user_id'])) {
@@ -41,7 +42,7 @@ if (isset($_GET['ajax_payment_history'])) {
     header('Content-Type: application/json');
     $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : '';
     $esc_pen = $koneksi->real_escape_string($no_pen);
-    $resH = $koneksi->query("SELECT tanggal, jumlah_bayar, keterangan FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen' ORDER BY id ASC");
+    $resH = $koneksi->query("SELECT id, no_penjualan, tanggal, jumlah_bayar, keterangan FROM pembayaran_kredit WHERE no_penjualan = '$esc_pen' ORDER BY tanggal ASC, id ASC");
     $history = [];
     if ($resH) {
         while ($h = $resH->fetch_assoc()) {
@@ -58,7 +59,9 @@ if (isset($_GET['ajax_sale_details'])) {
     $no_pen = isset($_GET['no_penjualan']) ? trim($_GET['no_penjualan']) : '';
     $esc_pen = $koneksi->real_escape_string($no_pen);
     $resS = $koneksi->query("
-        SELECT p.*, pel.nama as nama_pelanggan, pel.no_hp 
+        SELECT p.*, pel.nama as nama_pelanggan, pel.no_hp,
+               (SELECT COALESCE(SUM(pk.jumlah_bayar), 0) FROM pembayaran_kredit pk WHERE pk.no_penjualan = p.no_penjualan) AS total_terbayar_cicilan,
+               (SELECT COUNT(*) FROM pembayaran_kredit pk WHERE pk.no_penjualan = p.no_penjualan) AS total_cicilan_count
         FROM penjualan p 
         LEFT JOIN pelanggan pel ON p.pelanggan_id = pel.id 
         WHERE p.no_penjualan = '$esc_pen'
